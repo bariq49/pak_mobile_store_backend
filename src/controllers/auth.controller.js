@@ -23,12 +23,20 @@ exports.signup = catchAsync(async (req, res, next) => {
     passwordConfirm,
     role: role || "user",
   });
-  await sendEmail({
-    email: newUser.email,
-    subject: "Welcome to Pak Mobile Store!",
-    message: `Welcome ${newUser.name}! We're glad to have you.`,
-    html: welcomeEmail(newUser.name),
-  });
+
+  // Send welcome email (non-blocking - don't fail signup if email fails)
+  try {
+    await sendEmail({
+      email: newUser.email,
+      subject: "Welcome to Pak Mobile Store!",
+      message: `Welcome ${newUser.name}! We're glad to have you.`,
+      html: welcomeEmail(newUser.name),
+    });
+  } catch (emailError) {
+    // Log error but don't fail signup
+    console.error("Welcome email failed to send:", emailError.message);
+  }
+
   createSendToken(newUser, 201, res, "User registered successfully");
 });
 
