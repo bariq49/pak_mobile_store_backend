@@ -1,4 +1,4 @@
-# Emberidge Backend
+# Pak Mobile Store Backend
 
 E-commerce backend API built with **Node.js**, **Express**, and **MongoDB**.  
 This backend is **secure, scalable, and production-ready**.  
@@ -10,8 +10,8 @@ It includes **JWT authentication, product management, file uploads, and security
 
 1️⃣ **Clone the repository:**
 ```bash
-git clone https://github.com/yourusername/emberidge-backend.git
-cd emberidge-backend
+git clone https://github.com/yourusername/pak-mobile-store-backend.git
+cd pak-mobile-store-backend
 
 
 npm install
@@ -53,7 +53,7 @@ Use npm run db:migrate for safe schema updates.
 
 
 .env
-MONGO_URI=mongodb://localhost:27017/emberidge
+MONGO_URI=mongodb://localhost:27017/pak-mobile-store
 JWT_SECRET=your_jwt_secret
 JWT_EXPIRES_IN=90d
 EMAIL_HOST=smtp.example.com

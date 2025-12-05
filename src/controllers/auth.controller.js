@@ -25,7 +25,7 @@ exports.signup = catchAsync(async (req, res, next) => {
   });
   await sendEmail({
     email: newUser.email,
-    subject: "Welcome to Emberidge!",
+    subject: "Welcome to Pak Mobile Store!",
     message: `Welcome ${newUser.name}! We're glad to have you.`,
     html: welcomeEmail(newUser.name),
   });

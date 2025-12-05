@@ -1,7 +1,7 @@
 {
-  "name": "xalvion-api",
+  "name": "pak-mobile-store-backend",
   "version": "1.0.0",
-  "description": "E-commerce backend API",
+  "description": "Pak Mobile Store Backend API",
   "main": "src/server.js",
   "scripts": {
     "start": "NODE_ENV=production node src/server.js",

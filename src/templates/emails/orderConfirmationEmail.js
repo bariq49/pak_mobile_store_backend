@@ -71,7 +71,7 @@ module.exports = function orderConfirmationEmail(data) {
               ${data.streetAddress}, ${data.city}, ${data.country}
             </p>
   
-            <a href="https://emberidge.com/track/${
+            <a href="https://pakmobilestore.com/track/${
               data.trackingNumber
             }" class="btn">
               Track My Order
@@ -79,7 +79,7 @@ module.exports = function orderConfirmationEmail(data) {
           </div>
   
           <div class="footer">
-            <p>© ${new Date().getFullYear()} Emberidge. All rights reserved.</p>
+            <p>© ${new Date().getFullYear()} Pak Mobile Store. All rights reserved.</p>
           </div>
         </div>
       </body>
