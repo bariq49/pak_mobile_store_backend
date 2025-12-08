@@ -28,9 +28,27 @@ const siteSettingRoutes = require("./routes/siteSetting.routes");
 const stripeWebhook = require("./routes/stripeWebhook.route");
 
 app.use("/api/stripe", stripeWebhook);
-// CORS
-app.use(cors());
-app.options("*", cors());
+
+// CORS Configuration
+const corsOptions = {
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    process.env.CLIENT_URL, // From .env file
+  ].filter(Boolean), // Remove undefined values
+  credentials: true, // Allow cookies to be sent
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+  ],
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // Security
 app.use(helmet());
@@ -47,9 +65,11 @@ const limiter = rateLimit({
   message: "Too many requests from this IP, please try again in an hour!",
 });
 app.use("/api", limiter);
-// Body parser
-app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+
+// Body parser - Increased limits to handle large product payloads
+// Note: For multipart/form-data (file uploads), multer handles the parsing
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb", parameterLimit: 50000 }));
 app.use(cookieParser());
 
 // Sanitization

@@ -14,6 +14,170 @@ const successResponse = require("../utils/successResponse");
 const errorResponse = require("../utils/errorResponse");
 const { generateUniqueSlug, createSlug } = require("../utils/slug");
 const formatAdditionalInfo = require("../utils/formatAdditionalInfo");
+const { getImageUrl, deleteFromCloudinary } = require("../../config/cloudinary");
+const mongoose = require("mongoose");
+
+// ------------------ CATEGORY LOOKUP HELPER ------------------
+
+/**
+ * Check if a string is a valid MongoDB ObjectId
+ * @param {string} id - String to check
+ * @returns {boolean} Whether the string is a valid ObjectId
+ */
+const isValidObjectId = (id) => {
+  if (!id) return false;
+  return mongoose.Types.ObjectId.isValid(id) && 
+         (String(new mongoose.Types.ObjectId(id)) === id);
+};
+
+/**
+ * Find category by ID, name, or slug
+ * Accepts: ObjectId string, category name, or category slug
+ * @param {string} categoryInput - Category identifier (ObjectId, name, or slug)
+ * @returns {Promise<object|null>} Category document or null
+ */
+const findCategoryByIdOrName = async (categoryInput) => {
+  if (!categoryInput) return null;
+  
+  const trimmedInput = String(categoryInput).trim();
+  
+  if (!trimmedInput) return null;
+  
+  // Try to find by ObjectId first
+  if (isValidObjectId(trimmedInput)) {
+    const categoryById = await Category.findById(trimmedInput);
+    if (categoryById) return categoryById;
+  }
+  
+  // Try to find by slug (case-insensitive)
+  const categoryBySlug = await Category.findOne({ 
+    slug: trimmedInput.toLowerCase() 
+  });
+  if (categoryBySlug) return categoryBySlug;
+  
+  // Try to find by name (case-insensitive)
+  const categoryByName = await Category.findOne({ 
+    name: { $regex: new RegExp(`^${trimmedInput}$`, 'i') } 
+  });
+  if (categoryByName) return categoryByName;
+  
+  return null;
+};
+
+/**
+ * Find subcategory within a parent category by ID, name, or slug
+ * @param {object} parentCategory - Parent category document
+ * @param {string} subCategoryInput - Subcategory identifier
+ * @returns {object|null} Subcategory subdocument or null
+ */
+const findSubCategory = (parentCategory, subCategoryInput) => {
+  if (!parentCategory || !subCategoryInput || !parentCategory.children) return null;
+  
+  const trimmedInput = String(subCategoryInput).trim();
+  
+  // Try to find by ObjectId
+  if (isValidObjectId(trimmedInput)) {
+    const subById = parentCategory.children.id(trimmedInput);
+    if (subById) return subById;
+  }
+  
+  // Try to find by slug
+  const subBySlug = parentCategory.children.find(
+    child => child.slug && child.slug.toLowerCase() === trimmedInput.toLowerCase()
+  );
+  if (subBySlug) return subBySlug;
+  
+  // Try to find by name
+  const subByName = parentCategory.children.find(
+    child => child.name && child.name.toLowerCase() === trimmedInput.toLowerCase()
+  );
+  if (subByName) return subByName;
+  
+  return null;
+};
+
+// ------------------ SKU GENERATION HELPERS ------------------
+
+/**
+ * Generate a random alphanumeric string
+ * @param {number} length - Length of the random string
+ * @returns {string} Random alphanumeric string (uppercase)
+ */
+const generateRandomString = (length = 6) => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Removed confusing chars: I, O, 0, 1
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+/**
+ * Sanitize brand name for SKU (uppercase, remove special chars, limit length)
+ * @param {string} brand - Brand name
+ * @returns {string} Sanitized brand code
+ */
+const sanitizeBrandForSKU = (brand) => {
+  if (!brand) return "PRD";
+  return brand
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "") // Remove special characters
+    .substring(0, 4); // Limit to 4 characters
+};
+
+/**
+ * Validate SKU format
+ * Valid format: Letters, numbers, hyphens, 4-30 characters
+ * @param {string} sku - SKU to validate
+ * @returns {boolean} Whether SKU is valid
+ */
+const isValidSKU = (sku) => {
+  if (!sku || typeof sku !== "string") return false;
+  const skuRegex = /^[A-Za-z0-9-]{4,30}$/;
+  return skuRegex.test(sku.trim());
+};
+
+/**
+ * Generate a unique SKU for a product
+ * Format: [BRAND_CODE]-[RANDOM_6_CHARS]
+ * Example: APPL-X7K9M2, SAM-P3R5T8
+ * @param {string} brand - Product brand name
+ * @param {number} maxAttempts - Maximum attempts to generate unique SKU
+ * @returns {Promise<string>} Unique SKU
+ */
+const generateUniqueSKU = async (brand, maxAttempts = 10) => {
+  const brandCode = sanitizeBrandForSKU(brand);
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const randomPart = generateRandomString(6);
+    const sku = `${brandCode}-${randomPart}`;
+    
+    // Check if SKU already exists
+    const existingProduct = await Product.findOne({ sku });
+    if (!existingProduct) {
+      return sku;
+    }
+  }
+  
+  // Fallback: Add timestamp to ensure uniqueness
+  const timestamp = Date.now().toString(36).toUpperCase();
+  return `${brandCode}-${generateRandomString(4)}-${timestamp}`;
+};
+
+/**
+ * Check if a SKU already exists in the database
+ * @param {string} sku - SKU to check
+ * @param {string} excludeProductId - Product ID to exclude from check (for updates)
+ * @returns {Promise<boolean>} Whether SKU exists
+ */
+const isSKUExists = async (sku, excludeProductId = null) => {
+  const query = { sku };
+  if (excludeProductId) {
+    query._id = { $ne: excludeProductId };
+  }
+  const existingProduct = await Product.findOne(query);
+  return !!existingProduct;
+};
 
 // ------------------ GET ALL PRODUCTS (WITH FILTERS) ------------------
 exports.getAllProducts = catchAsync(async (req, res, next) => {
@@ -58,8 +222,17 @@ exports.getAllProducts = catchAsync(async (req, res, next) => {
 
 // ------------------ GET SINGLE PRODUCT ------------------
 exports.getProduct = catchAsync(async (req, res, next) => {
-  const product = await Product.findOne({ slug: req.params.slug })
+  const { id } = req.params;
+
+  // Validate if id is a valid MongoDB ObjectId
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return errorResponse(res, "Invalid product ID format", 400);
+  }
+
+  const product = await Product.findById(id)
     .populate("tags", "name slug")
+    .populate("category", "name slug")
+    .populate("subCategory", "name slug")
     .populate({
       path: "variations",
       populate: {
@@ -88,7 +261,7 @@ exports.getProduct = catchAsync(async (req, res, next) => {
     });
 
   if (!product)
-    return errorResponse(res, "No product found with that slug", 404);
+    return errorResponse(res, "No product found with that ID", 404);
 
   const productData = product.toObject();
 
@@ -111,11 +284,173 @@ exports.getProduct = catchAsync(async (req, res, next) => {
   );
 });
 
+// ------------------ VALIDATION HELPERS ------------------
+
+/**
+ * Validate mandatory fields for product creation
+ * Note: Category validation is handled separately with better error messages
+ */
+const validateMandatoryFields = (data, hasMainImage) => {
+  const errors = [];
+
+  if (!data.productName && !data.name) {
+    errors.push("productName is required");
+  }
+
+  if (!data.brand) {
+    errors.push("brand is required");
+  }
+
+  if (!data.model) {
+    errors.push("model is required");
+  }
+
+  // Category is validated separately with findCategoryByIdOrName()
+  // This allows for better error messages (category not found vs category required)
+
+  if (data.price === undefined || data.price === null || data.price === "") {
+    errors.push("price is required");
+  } else if (isNaN(Number(data.price)) || Number(data.price) < 0) {
+    errors.push("price must be a valid positive number");
+  }
+
+  if (!hasMainImage && !data.mainImage) {
+    errors.push("mainImage is required (at least 1 main/featured image)");
+  }
+
+  return errors;
+};
+
+/**
+ * Validate variants array if provided
+ */
+const validateVariants = (variants) => {
+  const errors = [];
+
+  if (!Array.isArray(variants)) {
+    errors.push("variants must be an array");
+    return errors;
+  }
+
+  variants.forEach((variant, index) => {
+    // Validate variant price if provided
+    if (variant.price !== undefined && variant.price !== null) {
+      if (isNaN(Number(variant.price)) || Number(variant.price) < 0) {
+        errors.push(`variants[${index}].price must be a valid positive number`);
+      }
+    }
+
+    // Validate variant stock if provided
+    if (variant.stock !== undefined && variant.stock !== null) {
+      if (isNaN(Number(variant.stock)) || Number(variant.stock) < 0) {
+        errors.push(`variants[${index}].stock must be a valid non-negative number`);
+      }
+    }
+  });
+
+  return errors;
+};
+
+/**
+ * Validate technical specifications if provided
+ */
+const validateTechnicalSpecs = (specs) => {
+  if (!specs || typeof specs !== "object") {
+    return [];
+  }
+
+  const errors = [];
+  const validFields = [
+    "displaySize",
+    "displayType",
+    "processor",
+    "rearCamera",
+    "frontCamera",
+    "battery",
+    "fastCharging",
+    "operatingSystem",
+    "network",
+    "bluetooth",
+    "nfc",
+    "simSupport",
+    "dimensions",
+    "weight",
+  ];
+
+  // All tech spec fields should be strings if provided
+  for (const [key, value] of Object.entries(specs)) {
+    if (validFields.includes(key) && value !== null && value !== undefined) {
+      if (typeof value !== "string") {
+        errors.push(`technicalSpecifications.${key} must be a string`);
+      }
+    }
+  }
+
+  return errors;
+};
+
+/**
+ * Parse JSON string or return object
+ */
+const parseJSON = (data, fieldName) => {
+  if (!data) return null;
+  if (typeof data === "object") return data;
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data);
+    } catch {
+      throw new AppError(`Invalid JSON for ${fieldName}`, 400);
+    }
+  }
+  return null;
+};
+
+/**
+ * Parse array from string or return array
+ */
+const parseArray = (data, fieldName) => {
+  if (!data) return [];
+  if (typeof data === "string") {
+    try {
+      const parsed = JSON.parse(data);
+      if (!Array.isArray(parsed)) throw new Error();
+      return parsed;
+    } catch {
+      throw new AppError(`Invalid JSON for ${fieldName}`, 400);
+    }
+  }
+  if (!Array.isArray(data)) {
+    throw new AppError(`${fieldName} must be an array`, 400);
+  }
+  return data;
+};
+
+// ------------------ HELPER: Extract Cloudinary URL from uploaded file ------------------
+const getUploadedImageUrl = (file) => {
+  if (!file) return null;
+  // Cloudinary storage returns the URL in file.path
+  return file.path || file.secure_url || file.url || null;
+};
+
+// ------------------ HELPER: Process variant images from uploaded files ------------------
+const processVariantImages = (files, variants) => {
+  if (!variants || !Array.isArray(variants)) return variants;
+
+  return variants.map((variant, index) => {
+    // Check for individual variant image field (variant_0_image, variant_1_image, etc.)
+    const variantImageField = `variant_${index}_image`;
+    if (files[variantImageField]?.length) {
+      variant.image = getUploadedImageUrl(files[variantImageField][0]);
+    }
+    return variant;
+  });
+};
+
 // ------------------ CREATE PRODUCT ------------------
 exports.createProduct = catchAsync(async (req, res, next) => {
   let productData = req.body;
 
-  // Parse product JSON if sent as string
+  // Parse product JSON if sent as string (for multipart/form-data)
   if (typeof req.body.product === "string") {
     try {
       productData = JSON.parse(req.body.product);
@@ -124,22 +459,45 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     }
   }
 
+  // Extract all fields from request
   let {
-    name,
-    category,
-    subCategory,
-    description,
-    product_details,
-    additional_info,
-    videoUrl,
-    price,
-    sale_price,
-    on_sale, // Sale status
-    sale_start, // Sale start date
-    sale_end, // Sale end date
+    // Mandatory fields
+    productName,
+    name, // Legacy support
     brand,
     model,
+    category,
+    subCategory,
+    price,
+    mainImage,
+
+    // Optional pricing fields
+    salePrice,
+    sale_price, // Legacy support
+    costPrice,
+    tax,
+
+    // Optional media fields
+    galleryImages,
+    videoUrl,
+
+    // Optional product info
+    description,
+    product_details,
+    whatsInTheBox,
+    condition,
+    sku,
     tags,
+
+    // Optional mobile-specific fields
+    variants,
+    technicalSpecifications,
+
+    // Legacy/system fields
+    additional_info,
+    on_sale,
+    sale_start,
+    sale_end,
     variations,
     variation_options,
     product_type,
@@ -148,64 +506,197 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     quantity,
   } = productData;
 
-  // Validate category
-  if (!category) return errorResponse(res, "Category ID is required", 400);
-  const categoryDoc = await Category.findById(category);
-  if (!categoryDoc) return errorResponse(res, "Category not found", 404);
-  if (subCategory && !categoryDoc.children.id(subCategory))
-    return errorResponse(res, "Sub-category not found in this category", 404);
+  // Use productName or fallback to name for backward compatibility
+  const finalProductName = productName || name;
 
-  // Helper to parse arrays
-  const parseArray = (data, fieldName) => {
-    if (!data) return [];
-    if (typeof data === "string") {
-      try {
-        const parsed = JSON.parse(data);
-        if (!Array.isArray(parsed)) throw new Error();
-        return parsed;
-      } catch {
-        throw new AppError(`Invalid JSON for ${fieldName}`, 400);
-      }
+  // ----------- PROCESS UPLOADED IMAGES -----------
+  // Check for main image from file upload (mainImage or image field)
+  const hasUploadedMainImage = !!(req.files?.mainImage?.length || req.files?.image?.length);
+  const uploadedMainImageUrl = hasUploadedMainImage
+    ? getUploadedImageUrl(req.files?.mainImage?.[0] || req.files?.image?.[0])
+    : null;
+
+  // Use uploaded image URL or fallback to provided URL
+  const finalMainImage = uploadedMainImageUrl || mainImage;
+
+  // ----------- VALIDATE MANDATORY FIELDS -----------
+  const mandatoryErrors = validateMandatoryFields(
+    { ...productData, productName: finalProductName, mainImage: finalMainImage },
+    hasUploadedMainImage
+  );
+
+  if (mandatoryErrors.length > 0) {
+    return errorResponse(
+      res,
+      `Validation failed: ${mandatoryErrors.join(", ")}`,
+      400,
+      mandatoryErrors
+    );
+  }
+
+  // ----------- VALIDATE CATEGORY -----------
+  // Category can be: ObjectId, category name, or category slug
+  if (!category || String(category).trim() === "") {
+    return errorResponse(res, "Category is required", 400);
+  }
+
+  const categoryDoc = await findCategoryByIdOrName(category);
+  if (!categoryDoc) {
+    return errorResponse(
+      res, 
+      `Category "${category}" not found. Please provide a valid category ID, name, or slug.`, 
+      404
+    );
+  }
+
+  // Get the actual category ObjectId for storing in database
+  const categoryId = categoryDoc._id;
+
+  // Validate subcategory if provided
+  let subCategoryId = null;
+  if (subCategory) {
+    const subCategoryDoc = findSubCategory(categoryDoc, subCategory);
+    if (!subCategoryDoc) {
+      return errorResponse(
+        res, 
+        `Sub-category "${subCategory}" not found in category "${categoryDoc.name}". Please provide a valid sub-category ID, name, or slug.`, 
+        404
+      );
     }
-    if (!Array.isArray(data))
-      throw new AppError(`${fieldName} must be an array`, 400);
-    return data;
-  };
+    subCategoryId = subCategoryDoc._id;
+  }
 
+  // ----------- PARSE ARRAYS & OBJECTS -----------
   try {
     tags = parseArray(tags, "tags");
     variations = parseArray(variations, "variations");
     variation_options = parseArray(variation_options, "variation_options");
+    variants = parseArray(variants, "variants");
+    galleryImages = parseArray(galleryImages, "galleryImages");
+    technicalSpecifications = parseJSON(technicalSpecifications, "technicalSpecifications");
+    additional_info = parseJSON(additional_info, "additional_info");
   } catch (err) {
     return errorResponse(res, err.message, err.statusCode || 400);
   }
 
-  // ----------- ADDITIONAL INFO -----------
-  if (additional_info && typeof additional_info === "string") {
-    try {
-      additional_info = JSON.parse(additional_info);
-    } catch {
-      return errorResponse(res, "Invalid JSON in additional_info field", 400);
+  // ----------- PROCESS GALLERY IMAGES -----------
+  // Get URLs from uploaded gallery images
+  const uploadedGalleryUrls = [];
+  if (req.files?.gallery?.length) {
+    req.files.gallery.forEach((file) => {
+      const url = getUploadedImageUrl(file);
+      if (url) uploadedGalleryUrls.push(url);
+    });
+  }
+  if (req.files?.galleryImages?.length) {
+    req.files.galleryImages.forEach((file) => {
+      const url = getUploadedImageUrl(file);
+      if (url) uploadedGalleryUrls.push(url);
+    });
+  }
+
+  // Combine uploaded gallery URLs with provided URLs
+  const finalGalleryImages = [
+    ...uploadedGalleryUrls,
+    ...(galleryImages || []).filter((url) => typeof url === "string" && url.trim()),
+  ];
+
+  // ----------- PROCESS VARIANT IMAGES -----------
+  if (variants && variants.length > 0 && req.files) {
+    variants = processVariantImages(req.files, variants);
+
+    // Also check for variantImages array field
+    if (req.files.variantImages?.length) {
+      req.files.variantImages.forEach((file, index) => {
+        if (variants[index] && !variants[index].image) {
+          variants[index].image = getUploadedImageUrl(file);
+        }
+      });
     }
   }
+
+  // ----------- VALIDATE VARIANTS (IF PROVIDED) -----------
+  if (variants && variants.length > 0) {
+    const variantErrors = validateVariants(variants);
+    if (variantErrors.length > 0) {
+      return errorResponse(
+        res,
+        `Variant validation failed: ${variantErrors.join(", ")}`,
+        400,
+        variantErrors
+      );
+    }
+
+    // Auto-generate SKU for variants that don't have one
+    for (let i = 0; i < variants.length; i++) {
+      if (!variants[i].sku || !isValidSKU(variants[i].sku)) {
+        const variantCode = variants[i].storage || variants[i].color || `V${i + 1}`;
+        const sanitizedVariantCode = variantCode.toUpperCase().replace(/[^A-Z0-9]/g, "").substring(0, 4);
+        variants[i].sku = `${sanitizeBrandForSKU(brand)}-${sanitizedVariantCode}-${generateRandomString(4)}`;
+      } else {
+        variants[i].sku = variants[i].sku.toUpperCase().trim();
+      }
+    }
+  }
+
+  // ----------- VALIDATE TECHNICAL SPECS (IF PROVIDED) -----------
+  if (technicalSpecifications) {
+    const techSpecErrors = validateTechnicalSpecs(technicalSpecifications);
+    if (techSpecErrors.length > 0) {
+      return errorResponse(
+        res,
+        `Technical specifications validation failed: ${techSpecErrors.join(", ")}`,
+        400,
+        techSpecErrors
+      );
+    }
+  }
+
+  // ----------- SET DEFAULTS FOR OPTIONAL FIELDS -----------
   if (!additional_info || typeof additional_info !== "object") {
     additional_info = {};
+  }
+
+  // ----------- SKU GENERATION -----------
+  let finalSKU = null;
+  
+  if (sku && isValidSKU(sku)) {
+    // Check if provided SKU already exists
+    const skuExists = await isSKUExists(sku);
+    if (skuExists) {
+      return errorResponse(
+        res,
+        `SKU "${sku}" already exists. Please provide a unique SKU or leave it empty for auto-generation.`,
+        400
+      );
+    }
+    finalSKU = sku.toUpperCase().trim();
+  } else {
+    // Auto-generate unique SKU
+    finalSKU = await generateUniqueSKU(brand);
   }
 
   // ----------- TAGS -----------
   const tagIds = [];
   for (const tag of tags) {
-    const slug = tag.slug || createSlug(tag.name);
+    const tagName = typeof tag === "string" ? tag : tag.name;
+    if (!tagName) continue;
+
+    const slug = tag.slug || createSlug(tagName);
     let existingTag = await Tag.findOne({ slug });
-    if (!existingTag) existingTag = await Tag.create({ name: tag.name, slug });
+    if (!existingTag) {
+      existingTag = await Tag.create({ name: tagName, slug });
+    }
     tagIds.push(existingTag._id);
   }
 
-  // ----------- VARIATIONS -----------
+  // ----------- LEGACY VARIATIONS -----------
   const variationIds = [];
   const attributeMap = {};
 
   for (const variation of variations) {
+    if (!variation.attribute) continue;
+
     const attrName = variation.attribute.name;
     const attrSlug = variation.attribute.slug || createSlug(attrName);
     let attribute = await Attribute.findOne({ slug: attrSlug });
@@ -215,10 +706,11 @@ exports.createProduct = catchAsync(async (req, res, next) => {
         name: attrName,
         slug: attrSlug,
         type: variation.attribute.type,
-        values: variation.attribute.values.map((v) => ({
-          value: v.value,
-          image: v.image || null,
-        })),
+        values:
+          variation.attribute.values?.map((v) => ({
+            value: v.value,
+            image: v.image || null,
+          })) || [],
       });
     }
 
@@ -231,39 +723,37 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     attributeMap[attrSlug] = attribute._id;
   }
 
-  // ----------- IMAGE & GALLERY -----------
-  let image = null;
-  if (req.files?.image?.length) {
-    const file = req.files.image[0];
-    const imageDoc = new Image({ original: file.path, thumbnail: file.path });
+  // ----------- LEGACY IMAGE MODEL (for backward compatibility) -----------
+  let imageDocId = null;
+  if (finalMainImage) {
+    const imageDoc = new Image({
+      original: finalMainImage,
+      thumbnail: finalMainImage,
+    });
     await imageDoc.save();
-    image = imageDoc._id;
+    imageDocId = imageDoc._id;
   }
 
-  let galleryIds = [];
-  if (req.files?.gallery?.length) {
+  // Legacy gallery (Image model references)
+  let galleryDocIds = [];
+  if (finalGalleryImages.length > 0) {
     const imageDocs = await Promise.all(
-      req.files.gallery.map(async (file) => {
-        const img = new Image({ original: file.path, thumbnail: file.path });
+      finalGalleryImages.map(async (url) => {
+        const img = new Image({ original: url, thumbnail: url });
         await img.save();
         return img;
       })
     );
-    galleryIds = imageDocs.map((img) => img._id);
+    galleryDocIds = imageDocs.map((img) => img._id);
   }
 
   // ----------- SALE FIELDS VALIDATION -----------
+  const finalSalePrice = salePrice || sale_price;
 
-  // Check if sale price is less than regular price
-  if (on_sale && sale_price >= price) {
-    return errorResponse(
-      res,
-      "Sale price must be less than regular price",
-      400
-    );
+  if (on_sale && finalSalePrice >= price) {
+    return errorResponse(res, "Sale price must be less than regular price", 400);
   }
 
-  // Ensure sale dates are valid
   if (on_sale && (!sale_start || !sale_end)) {
     return errorResponse(
       res,
@@ -272,39 +762,67 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     );
   }
 
+  // ----------- DETERMINE PRODUCT TYPE -----------
+  const finalProductType =
+    product_type || (variants && variants.length > 0 ? "variable" : "simple");
+
   // ----------- CREATE PRODUCT -----------
-  const baseSlug = createSlug(name);
+  const baseSlug = createSlug(finalProductName);
   const uniqueSlug = await generateUniqueSlug(Product, baseSlug);
 
   const product = await Product.create({
-    name,
+    // Mandatory fields
+    productName: finalProductName,
+    name: finalProductName, // For backward compatibility
     slug: uniqueSlug,
-    category,
-    subCategory,
-    description,
-    product_details,
-    additional_info, // <-- properly included
-    videoUrl,
-    price: product_type === "simple" ? price : null,
-    sale_price: product_type === "simple" && on_sale ? sale_price : null, // Sale price included only if on_sale is true
-    on_sale: on_sale || false, // Sale status
-    sale_start: on_sale ? new Date(sale_start) : null, // Sale start date
-    sale_end: on_sale ? new Date(sale_end) : null, // Sale end date
+    category: categoryId,
+    subCategory: subCategoryId,
     brand,
     model,
+    price: Number(price),
+
+    // Images - Store URLs directly
+    mainImage: finalMainImage,
+    image: imageDocId, // Legacy Image model reference
+    galleryImages: finalGalleryImages, // Array of URLs
+    gallery: galleryDocIds, // Legacy Image model references
+
+    // Optional pricing
+    salePrice: finalSalePrice ? Number(finalSalePrice) : null,
+    sale_price: finalSalePrice ? Number(finalSalePrice) : null,
+    costPrice: costPrice ? Number(costPrice) : null,
+    tax: tax ? Number(tax) : null,
+
+    // Optional media
+    videoUrl: videoUrl || null,
+
+    // Optional product info
+    description: description || null,
+    product_details: product_details || null,
+    whatsInTheBox: whatsInTheBox || null,
+    condition: condition || "new",
+    sku: finalSKU,
     tags: tagIds,
-    product_type,
-    max_price: product_type === "variable" ? max_price : null,
-    min_price: product_type === "variable" ? min_price : null,
+
+    // Mobile-specific fields
+    variants: variants || [],
+    technicalSpecifications: technicalSpecifications || null,
+
+    // System fields
+    additional_info,
+    product_type: finalProductType,
+    on_sale: on_sale || false,
+    sale_start: on_sale ? new Date(sale_start) : null,
+    sale_end: on_sale ? new Date(sale_end) : null,
+    max_price: finalProductType === "variable" ? max_price : null,
+    min_price: finalProductType === "variable" ? min_price : null,
     variations: variationIds,
     variation_options: [],
-    image,
-    gallery: galleryIds,
     is_active: true,
-    quantity: product_type === "simple" ? quantity || 0 : 0,
+    quantity: quantity !== undefined && quantity !== null ? Number(quantity) : 0,
   });
 
-  // ----------- VARIATION OPTIONS -----------
+  // ----------- LEGACY VARIATION OPTIONS -----------
   const variationOptionIds = [];
   for (const option of variation_options) {
     const attributesMapped = option.attributes?.map((attr) => ({
@@ -313,10 +831,7 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     }));
 
     const optionSlugBase = option.slug || createSlug(option.title);
-    const optionSlug = await generateUniqueSlug(
-      VariationOption,
-      optionSlugBase
-    );
+    const optionSlug = await generateUniqueSlug(VariationOption, optionSlugBase);
 
     const variationOptionDoc = await VariationOption.create({
       title: option.title,
@@ -336,7 +851,14 @@ exports.createProduct = catchAsync(async (req, res, next) => {
   product.variation_options = variationOptionIds;
   await product.save();
 
-  return successResponse(res, { product }, "Product created successfully", 201);
+  // Return success response with consistent format
+  return res.status(201).json({
+    success: true,
+    status: "success",
+    message: "Product created successfully",
+    product: product,
+    data: { product },
+  });
 });
 
 // ------------------ UPDATE PRODUCT ------------------
@@ -344,6 +866,7 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
   const { id } = req.params;
   let updateData = req.body;
 
+  // Parse product JSON if sent as string (for multipart/form-data)
   if (typeof req.body.product === "string") {
     try {
       updateData = JSON.parse(req.body.product);
@@ -355,112 +878,369 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
   const product = await Product.findById(id);
   if (!product) return errorResponse(res, "Product not found", 404);
 
-  const {
-    name,
+  // Extract all fields from request
+  let {
+    // Name fields
+    productName,
+    name, // Legacy support
+
+    // Category fields
     category,
     subCategory,
+
+    // Basic product info
     description,
     product_details,
-    additional_info,
-    price,
-    sale_price,
     brand,
     model,
+    price,
+    quantity,
+
+    // Pricing fields
+    salePrice,
+    sale_price, // Legacy support
+    costPrice,
+    tax,
+
+    // Media fields
+    mainImage,
+    galleryImages,
+    videoUrl,
+
+    // Product details
+    whatsInTheBox,
+    condition,
+    sku,
+
+    // Mobile-specific fields
+    variants,
+    technicalSpecifications,
+
+    // System fields
     tags,
     variations,
     variation_options,
     product_type,
-    quantity,
+    additional_info,
+    on_sale,
+    sale_start,
+    sale_end,
   } = updateData;
 
-  /* ------------------ VALIDATE CATEGORY ------------------ */
-  if (category) {
-    const categoryDoc = await Category.findById(category);
-    if (!categoryDoc) return errorResponse(res, "Category not found", 404);
+  // Use productName or fallback to name for backward compatibility
+  const finalProductName = productName || name;
 
-    if (subCategory && !categoryDoc.children.id(subCategory)) {
-      return errorResponse(res, "Sub-category not found in this category", 404);
+  // ----------- PROCESS UPLOADED IMAGES -----------
+  const hasUploadedMainImage = !!(req.files?.mainImage?.length || req.files?.image?.length);
+  const uploadedMainImageUrl = hasUploadedMainImage
+    ? getUploadedImageUrl(req.files?.mainImage?.[0] || req.files?.image?.[0])
+    : null;
+
+  // Use uploaded image URL or fallback to provided URL
+  const finalMainImage = uploadedMainImageUrl || mainImage;
+
+  // ----------- VALIDATE CATEGORY (if provided) -----------
+  let categoryId = product.category;
+  let subCategoryId = product.subCategory;
+
+  if (category !== undefined) {
+    const categoryDoc = await findCategoryByIdOrName(category);
+    if (!categoryDoc) {
+      return errorResponse(
+        res,
+        `Category "${category}" not found. Please provide a valid category ID, name, or slug.`,
+        404
+      );
+    }
+    categoryId = categoryDoc._id;
+
+    if (subCategory !== undefined) {
+      if (subCategory === null || subCategory === "") {
+        subCategoryId = null;
+      } else {
+        const subCategoryDoc = findSubCategory(categoryDoc, subCategory);
+        if (!subCategoryDoc) {
+          return errorResponse(
+            res,
+            `Sub-category "${subCategory}" not found in category "${categoryDoc.name}".`,
+            404
+          );
+        }
+        subCategoryId = subCategoryDoc._id;
+      }
     }
   }
 
-  /* ------------------ PARSE ARRAYS ------------------ */
-  const parseArray = (data, fieldName) => {
-    if (!data) return undefined;
-    if (typeof data === "string") {
-      try {
-        const parsed = JSON.parse(data);
-        if (!Array.isArray(parsed)) throw new Error();
-        return parsed;
-      } catch {
-        throw new AppError(`Invalid JSON for ${fieldName}`, 400);
-      }
-    }
-    if (!Array.isArray(data))
-      throw new AppError(`${fieldName} must be an array`, 400);
-    return data;
-  };
-
-  let parsedTags, parsedVariations, parsedVariationOptions;
+  // ----------- PARSE ARRAYS & OBJECTS -----------
   try {
-    parsedTags = parseArray(tags, "tags");
-    parsedVariations = parseArray(variations, "variations");
-    parsedVariationOptions = parseArray(variation_options, "variation_options");
+    tags = parseArray(tags, "tags");
+    variations = parseArray(variations, "variations");
+    variation_options = parseArray(variation_options, "variation_options");
+    variants = parseArray(variants, "variants");
+    galleryImages = parseArray(galleryImages, "galleryImages");
+    technicalSpecifications = parseJSON(technicalSpecifications, "technicalSpecifications");
+    additional_info = parseJSON(additional_info, "additional_info");
   } catch (err) {
     return errorResponse(res, err.message, err.statusCode || 400);
   }
 
-  /* ------------------ HANDLE TAGS ------------------ */
-  let tagIds;
-  if (parsedTags) {
-    tagIds = [];
-    for (const tag of parsedTags) {
-      // Find by name
-      let existingTag = await Tag.findOne({ name: tag.name });
+  // ----------- PROCESS GALLERY IMAGES -----------
+  const uploadedGalleryUrls = [];
+  if (req.files?.gallery?.length) {
+    req.files.gallery.forEach((file) => {
+      const url = getUploadedImageUrl(file);
+      if (url) uploadedGalleryUrls.push(url);
+    });
+  }
+  if (req.files?.galleryImages?.length) {
+    req.files.galleryImages.forEach((file) => {
+      const url = getUploadedImageUrl(file);
+      if (url) uploadedGalleryUrls.push(url);
+    });
+  }
+
+  // Combine uploaded gallery URLs with provided URLs (if galleryImages is provided, replace; otherwise append)
+  let finalGalleryImages = product.galleryImages || [];
+  if (galleryImages !== undefined) {
+    finalGalleryImages = [
+      ...uploadedGalleryUrls,
+      ...(galleryImages || []).filter((url) => typeof url === "string" && url.trim()),
+    ];
+  } else if (uploadedGalleryUrls.length > 0) {
+    finalGalleryImages = [...(product.galleryImages || []), ...uploadedGalleryUrls];
+  }
+
+  // ----------- PROCESS VARIANT IMAGES -----------
+  if (variants && variants.length > 0 && req.files) {
+    variants = processVariantImages(req.files, variants);
+
+    // Also check for variantImages array field
+    if (req.files.variantImages?.length) {
+      req.files.variantImages.forEach((file, index) => {
+        if (variants[index] && !variants[index].image) {
+          variants[index].image = getUploadedImageUrl(file);
+        }
+      });
+    }
+  }
+
+  // ----------- VALIDATE VARIANTS (IF PROVIDED) -----------
+  if (variants && variants.length > 0) {
+    const variantErrors = validateVariants(variants);
+    if (variantErrors.length > 0) {
+      return errorResponse(
+        res,
+        `Variant validation failed: ${variantErrors.join(", ")}`,
+        400,
+        variantErrors
+      );
+    }
+
+    // Auto-generate SKU for variants that don't have one
+    const currentBrand = brand || product.brand;
+    for (let i = 0; i < variants.length; i++) {
+      if (!variants[i].sku || !isValidSKU(variants[i].sku)) {
+        const variantCode = variants[i].storage || variants[i].color || `V${i + 1}`;
+        const sanitizedVariantCode = variantCode.toUpperCase().replace(/[^A-Z0-9]/g, "").substring(0, 4);
+        variants[i].sku = `${sanitizeBrandForSKU(currentBrand)}-${sanitizedVariantCode}-${generateRandomString(4)}`;
+      } else {
+        variants[i].sku = variants[i].sku.toUpperCase().trim();
+      }
+    }
+  }
+
+  // ----------- VALIDATE TECHNICAL SPECS (IF PROVIDED) -----------
+  if (technicalSpecifications) {
+    const techSpecErrors = validateTechnicalSpecs(technicalSpecifications);
+    if (techSpecErrors.length > 0) {
+      return errorResponse(
+        res,
+        `Technical specifications validation failed: ${techSpecErrors.join(", ")}`,
+        400,
+        techSpecErrors
+      );
+    }
+  }
+
+  // ----------- SKU VALIDATION/GENERATION -----------
+  if (sku !== undefined) {
+    if (sku && isValidSKU(sku)) {
+      // Check if provided SKU already exists (excluding current product)
+      const skuExists = await isSKUExists(sku, product._id);
+      if (skuExists) {
+        return errorResponse(
+          res,
+          `SKU "${sku}" already exists. Please provide a unique SKU or leave it empty for auto-generation.`,
+          400
+        );
+      }
+      product.sku = sku.toUpperCase().trim();
+    } else if (sku === null || sku === "") {
+      // If SKU is explicitly set to null/empty, auto-generate
+      const currentBrand = brand || product.brand;
+      product.sku = await generateUniqueSKU(currentBrand);
+    }
+    // If invalid format, keep existing SKU (don't update)
+  }
+
+  // ----------- HANDLE TAGS -----------
+  if (tags !== undefined) {
+    const tagIds = [];
+    for (const tag of tags) {
+      const tagName = typeof tag === "string" ? tag : tag.name;
+      if (!tagName) continue;
+
+      const slug = tag.slug || createSlug(tagName);
+      let existingTag = await Tag.findOne({ slug });
       if (!existingTag) {
-        existingTag = await Tag.create({ name: tag.name }); // auto-slug
-      } else if (tag.name !== existingTag.name) {
-        // if tag name changed, update name and slug
-        existingTag.name = tag.name;
-        await existingTag.save();
+        existingTag = await Tag.create({ name: tagName, slug });
       }
       tagIds.push(existingTag._id);
     }
+    product.tags = tagIds;
   }
 
-  /* ------------------ HANDLE SLUG UPDATE ------------------ */
-  if (name && name !== product.name) {
-    const baseSlug = createSlug(name);
+  // ----------- HANDLE SLUG UPDATE (if name changed) -----------
+  if (finalProductName && finalProductName !== product.name && finalProductName !== product.productName) {
+    const baseSlug = createSlug(finalProductName);
     const uniqueSlug = await generateUniqueSlug(Product, baseSlug, product._id);
     product.slug = uniqueSlug;
-    product.name = name;
+    product.name = finalProductName;
+    product.productName = finalProductName;
   }
 
-  /* ------------------ SIMPLE FIELD UPDATES ------------------ */
-  if (description !== undefined) product.description = description;
-  if (product_details !== undefined) product.product_details = product_details;
-  if (additional_info !== undefined) product.additional_info = additional_info;
-  if (category) product.category = category;
-  if (subCategory !== undefined) product.subCategory = subCategory;
-  if (price !== undefined) product.price = price;
-  if (sale_price !== undefined) product.sale_price = sale_price;
-  if (brand !== undefined) product.brand = brand;
-  if (model !== undefined) product.model = model;
-  if (product_type !== undefined) product.product_type = product_type;
-  if (quantity !== undefined) product.quantity = quantity;
-  if (tagIds) product.tags = tagIds;
+  // ----------- LEGACY IMAGE MODEL (for backward compatibility) -----------
+  if (finalMainImage !== undefined) {
+    // Update Image model reference if mainImage changed
+    if (finalMainImage && finalMainImage !== product.mainImage) {
+      let imageDocId = product.image;
+      if (finalMainImage) {
+        // Check if Image document exists, otherwise create new
+        if (product.image) {
+          const existingImage = await Image.findById(product.image);
+          if (existingImage) {
+            existingImage.original = finalMainImage;
+            existingImage.thumbnail = finalMainImage;
+            await existingImage.save();
+            imageDocId = existingImage._id;
+          } else {
+            const imageDoc = new Image({
+              original: finalMainImage,
+              thumbnail: finalMainImage,
+            });
+            await imageDoc.save();
+            imageDocId = imageDoc._id;
+          }
+        } else {
+          const imageDoc = new Image({
+            original: finalMainImage,
+            thumbnail: finalMainImage,
+          });
+          await imageDoc.save();
+          imageDocId = imageDoc._id;
+        }
+        product.image = imageDocId;
+      }
+    }
+    product.mainImage = finalMainImage || null;
+  }
 
-  /* ------------------ HANDLE VARIATIONS (if sent) ------------------ */
-  if (parsedVariations) {
-    product.variations = [];
-    for (const variation of parsedVariations) {
-      const newVariation = await Variation.create(variation);
-      product.variations.push(newVariation._id);
+  // Update gallery Image model references
+  if (finalGalleryImages !== undefined && finalGalleryImages.length > 0) {
+    const galleryDocIds = [];
+    for (const url of finalGalleryImages) {
+      const imageDoc = new Image({ original: url, thumbnail: url });
+      await imageDoc.save();
+      galleryDocIds.push(imageDoc._id);
+    }
+    product.gallery = galleryDocIds;
+  }
+
+  // ----------- SALE FIELDS VALIDATION -----------
+  const finalSalePrice = salePrice || sale_price;
+  const finalPrice = price !== undefined ? Number(price) : product.price;
+
+  if (on_sale !== undefined) {
+    product.on_sale = on_sale || false;
+
+    if (on_sale && finalSalePrice !== undefined) {
+      if (finalSalePrice >= finalPrice) {
+        return errorResponse(res, "Sale price must be less than regular price", 400);
+      }
+      if (!sale_start || !sale_end) {
+        return errorResponse(
+          res,
+          "Both sale_start and sale_end are required when on_sale is true",
+          400
+        );
+      }
+      product.sale_start = new Date(sale_start);
+      product.sale_end = new Date(sale_end);
+    } else if (!on_sale) {
+      product.sale_start = null;
+      product.sale_end = null;
     }
   }
 
-  if (parsedVariationOptions) {
+  // ----------- UPDATE PRODUCT FIELDS -----------
+  if (description !== undefined) product.description = description;
+  if (product_details !== undefined) product.product_details = product_details;
+  if (additional_info !== undefined) product.additional_info = additional_info;
+  if (category !== undefined) product.category = categoryId;
+  if (subCategory !== undefined) product.subCategory = subCategoryId;
+  if (price !== undefined) product.price = Number(price);
+  if (finalSalePrice !== undefined) {
+    product.salePrice = finalSalePrice ? Number(finalSalePrice) : null;
+    product.sale_price = finalSalePrice ? Number(finalSalePrice) : null;
+  }
+  if (costPrice !== undefined) product.costPrice = costPrice ? Number(costPrice) : null;
+  if (tax !== undefined) product.tax = tax ? Number(tax) : null;
+  if (brand !== undefined) product.brand = brand;
+  if (model !== undefined) product.model = model;
+  if (quantity !== undefined) product.quantity = quantity !== null ? Number(quantity) : 0;
+  if (product_type !== undefined) product.product_type = product_type;
+  if (whatsInTheBox !== undefined) product.whatsInTheBox = whatsInTheBox || null;
+  if (condition !== undefined) product.condition = condition || "new";
+  if (videoUrl !== undefined) product.videoUrl = videoUrl || null;
+  if (variants !== undefined) product.variants = variants || [];
+  if (technicalSpecifications !== undefined) product.technicalSpecifications = technicalSpecifications || null;
+  if (galleryImages !== undefined) product.galleryImages = finalGalleryImages;
+
+  // ----------- LEGACY VARIATIONS -----------
+  if (variations !== undefined) {
+    product.variations = [];
+    for (const variation of variations) {
+      if (!variation.attribute) continue;
+
+      const attrName = variation.attribute.name;
+      const attrSlug = variation.attribute.slug || createSlug(attrName);
+      let attribute = await Attribute.findOne({ slug: attrSlug });
+
+      if (!attribute) {
+        attribute = await Attribute.create({
+          name: attrName,
+          slug: attrSlug,
+          type: variation.attribute.type,
+          values:
+            variation.attribute.values?.map((v) => ({
+              value: v.value,
+              image: v.image || null,
+            })) || [],
+        });
+      }
+
+      const variationDoc = await Variation.create({
+        value: variation.value,
+        attribute: attribute._id,
+      });
+
+      product.variations.push(variationDoc._id);
+    }
+  }
+
+  if (variation_options !== undefined) {
     product.variation_options = [];
-    for (const option of parsedVariationOptions) {
+    for (const option of variation_options) {
       const newOption = await VariationOption.create({
         ...option,
         product: product._id,

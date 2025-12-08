@@ -3,6 +3,7 @@ const router = express.Router();
 const productController = require("../controllers/product.controller");
 const reviewController = require("../controllers/review.controller");
 const uploadProduct = require("../utils/uploadProduct");
+const { productImageFields, handleMulterError } = require("../utils/uploadProduct");
 const { protect, restrictTo } = require("../middleware/auth.middleware");
 
 // Public routes
@@ -13,7 +14,7 @@ router.get("/best-seller", productController.getBestSellerProducts);
 router.get("/new-arrival", productController.getNewSellerProducts);
 router.get("/on-sale", productController.getSaleProducts);
 router.get("/top-sales", productController.getTopSalesProducts);
-router.get("/:slug", productController.getProduct);
+router.get("/:id", productController.getProduct);
 router.get("/:slug/related", productController.getRelatedProducts);
 
 // Review routes (public and authenticated)
@@ -35,21 +36,19 @@ router.patch(
 // Admin-only routes
 router.use(protect, restrictTo("admin"));
 
+// Create product with image uploads (supports mainImage, gallery, variant images)
 router.post(
   "/",
-  uploadProduct.fields([
-    { name: "image", maxCount: 1 },
-    { name: "gallery", maxCount: 5 },
-  ]),
+  uploadProduct.fields(productImageFields),
+  handleMulterError,
   productController.createProduct
 );
 
+// Update product with image uploads
 router.patch(
   "/:id",
-  uploadProduct.fields([
-    { name: "image", maxCount: 1 },
-    { name: "gallery", maxCount: 5 },
-  ]),
+  uploadProduct.fields(productImageFields),
+  handleMulterError,
   productController.updateProduct
 );
 
