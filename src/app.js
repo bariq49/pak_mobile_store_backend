@@ -69,8 +69,21 @@ app.use("/api", limiter);
 // Body parser - Increased limits to handle large product payloads
 // Note: For multipart/form-data (file uploads), multer handles the parsing
 app.use(express.json({ limit: "50mb" }));
+app.use(express.text({ limit: "50mb", type: "text/plain" })); // Handle text/plain as JSON
 app.use(express.urlencoded({ extended: true, limit: "50mb", parameterLimit: 50000 }));
 app.use(cookieParser());
+
+// Middleware to parse text/plain as JSON if it looks like JSON
+app.use((req, res, next) => {
+  if (req.is("text/plain") && typeof req.body === "string" && req.body.trim().startsWith("{")) {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (err) {
+      // If parsing fails, keep as string
+    }
+  }
+  next();
+});
 
 // Sanitization
 app.use(mongoSanitize());

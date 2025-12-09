@@ -17,26 +17,6 @@ const variantSchema = new mongoose.Schema(
   { _id: true }
 );
 
-// Technical Specifications Schema for mobile products
-const technicalSpecificationsSchema = new mongoose.Schema(
-  {
-    displaySize: { type: String, trim: true }, // e.g., "6.7 inches"
-    displayType: { type: String, trim: true }, // e.g., "AMOLED", "IPS LCD"
-    processor: { type: String, trim: true }, // e.g., "Snapdragon 8 Gen 2"
-    rearCamera: { type: String, trim: true }, // e.g., "108MP + 12MP + 5MP"
-    frontCamera: { type: String, trim: true }, // e.g., "32MP"
-    battery: { type: String, trim: true }, // e.g., "5000mAh"
-    fastCharging: { type: String, trim: true }, // e.g., "65W"
-    operatingSystem: { type: String, trim: true }, // e.g., "Android 14"
-    network: { type: String, trim: true }, // e.g., "5G, 4G LTE"
-    bluetooth: { type: String, trim: true }, // e.g., "5.3"
-    nfc: { type: String, trim: true }, // e.g., "Yes", "No"
-    simSupport: { type: String, trim: true }, // e.g., "Dual SIM", "eSIM"
-    dimensions: { type: String, trim: true }, // e.g., "163.3 x 77.9 x 8.9 mm"
-    weight: { type: String, trim: true }, // e.g., "234g"
-  },
-  { _id: false }
-);
 
 
 const productSchema = new mongoose.Schema(
@@ -72,7 +52,6 @@ const productSchema = new mongoose.Schema(
     // Pricing fields
     salePrice: { type: Number, min: 0, default: null },
     sale_price: { type: Number, min: 0, default: null }, // Legacy support
-    costPrice: { type: Number, min: 0, default: null },
     tax: { type: Number, min: 0, default: null },
     
     // Product identifiers
@@ -90,7 +69,6 @@ const productSchema = new mongoose.Schema(
     
     // Mobile-specific fields
     whatsInTheBox: { type: String, trim: true, maxlength: 2000, default: null },
-    technicalSpecifications: { type: technicalSpecificationsSchema, default: null },
     variants: [variantSchema],
 
     // Tags
@@ -132,7 +110,8 @@ const productSchema = new mongoose.Schema(
     // Status
     in_stock: { type: Boolean, default: true, index: true },
     is_active: { type: Boolean, default: true, index: true },
-    additional_info: { type: Map, of: String, default: {} },
+    // Dynamic additional information as key-value pairs (all values must be strings)
+    additional_info: { type: Map, of: String, default: new Map() },
     deletedAt: { type: Date, default: null, index: true },
     
     // Ratings

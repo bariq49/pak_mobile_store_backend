@@ -352,41 +352,59 @@ const validateVariants = (variants) => {
 };
 
 /**
- * Validate technical specifications if provided
+ * Parse and validate additional_info
+ * Converts object or JSON string to a Map<String, String>
+ * Ensures all values are strings
+ * @param {any} additionalInfo - additional_info from request (object, string, or undefined)
+ * @returns {Map<string, string>} Validated Map with string values
+ * @throws {AppError} If JSON is invalid or values are not strings
  */
-const validateTechnicalSpecs = (specs) => {
-  if (!specs || typeof specs !== "object") {
-    return [];
+const parseAndValidateAdditionalInfo = (additionalInfo) => {
+  // If missing or null, return empty Map
+  if (!additionalInfo || additionalInfo === null || additionalInfo === "") {
+    return new Map();
   }
 
-  const errors = [];
-  const validFields = [
-    "displaySize",
-    "displayType",
-    "processor",
-    "rearCamera",
-    "frontCamera",
-    "battery",
-    "fastCharging",
-    "operatingSystem",
-    "network",
-    "bluetooth",
-    "nfc",
-    "simSupport",
-    "dimensions",
-    "weight",
-  ];
-
-  // All tech spec fields should be strings if provided
-  for (const [key, value] of Object.entries(specs)) {
-    if (validFields.includes(key) && value !== null && value !== undefined) {
-      if (typeof value !== "string") {
-        errors.push(`technicalSpecifications.${key} must be a string`);
+  let parsed;
+  
+  // If it's already an object, use it directly
+  if (typeof additionalInfo === "object" && !Array.isArray(additionalInfo)) {
+    parsed = additionalInfo;
+  }
+  // If it's a string, try to parse as JSON
+  else if (typeof additionalInfo === "string") {
+    try {
+      parsed = JSON.parse(additionalInfo);
+      // After parsing, must be an object
+      if (typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new AppError("additional_info must be a valid JSON object", 400);
       }
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      throw new AppError("Invalid JSON for additional_info", 400);
     }
   }
+  // If it's an array or other invalid type, return empty Map
+  else {
+    return new Map();
+  }
 
-  return errors;
+  // Convert to Map and ensure all values are strings
+  const infoMap = new Map();
+  for (const [key, value] of Object.entries(parsed)) {
+    // Convert key to string
+    const stringKey = String(key).trim();
+    if (!stringKey) continue; // Skip empty keys
+    
+    // Convert value to string (handle null/undefined)
+    const stringValue = value === null || value === undefined 
+      ? "" 
+      : String(value);
+    
+    infoMap.set(stringKey, stringValue);
+  }
+
+  return infoMap;
 };
 
 /**
@@ -474,7 +492,6 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     // Optional pricing fields
     salePrice,
     sale_price, // Legacy support
-    costPrice,
     tax,
 
     // Optional media fields
@@ -491,7 +508,6 @@ exports.createProduct = catchAsync(async (req, res, next) => {
 
     // Optional mobile-specific fields
     variants,
-    technicalSpecifications,
 
     // Legacy/system fields
     additional_info,
@@ -573,8 +589,8 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     variation_options = parseArray(variation_options, "variation_options");
     variants = parseArray(variants, "variants");
     galleryImages = parseArray(galleryImages, "galleryImages");
-    technicalSpecifications = parseJSON(technicalSpecifications, "technicalSpecifications");
-    additional_info = parseJSON(additional_info, "additional_info");
+    // Parse and validate additional_info (converts to Map<String, String>)
+    additional_info = parseAndValidateAdditionalInfo(additional_info);
   } catch (err) {
     return errorResponse(res, err.message, err.statusCode || 400);
   }
@@ -639,23 +655,6 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     }
   }
 
-  // ----------- VALIDATE TECHNICAL SPECS (IF PROVIDED) -----------
-  if (technicalSpecifications) {
-    const techSpecErrors = validateTechnicalSpecs(technicalSpecifications);
-    if (techSpecErrors.length > 0) {
-      return errorResponse(
-        res,
-        `Technical specifications validation failed: ${techSpecErrors.join(", ")}`,
-        400,
-        techSpecErrors
-      );
-    }
-  }
-
-  // ----------- SET DEFAULTS FOR OPTIONAL FIELDS -----------
-  if (!additional_info || typeof additional_info !== "object") {
-    additional_info = {};
-  }
 
   // ----------- SKU GENERATION -----------
   let finalSKU = null;
@@ -790,7 +789,6 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     // Optional pricing
     salePrice: finalSalePrice ? Number(finalSalePrice) : null,
     sale_price: finalSalePrice ? Number(finalSalePrice) : null,
-    costPrice: costPrice ? Number(costPrice) : null,
     tax: tax ? Number(tax) : null,
 
     // Optional media
@@ -806,7 +804,6 @@ exports.createProduct = catchAsync(async (req, res, next) => {
 
     // Mobile-specific fields
     variants: variants || [],
-    technicalSpecifications: technicalSpecifications || null,
 
     // System fields
     additional_info,
@@ -899,7 +896,6 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
     // Pricing fields
     salePrice,
     sale_price, // Legacy support
-    costPrice,
     tax,
 
     // Media fields
@@ -914,7 +910,6 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
 
     // Mobile-specific fields
     variants,
-    technicalSpecifications,
 
     // System fields
     tags,
@@ -978,8 +973,8 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
     variation_options = parseArray(variation_options, "variation_options");
     variants = parseArray(variants, "variants");
     galleryImages = parseArray(galleryImages, "galleryImages");
-    technicalSpecifications = parseJSON(technicalSpecifications, "technicalSpecifications");
-    additional_info = parseJSON(additional_info, "additional_info");
+    // Parse and validate additional_info (converts to Map<String, String>)
+    additional_info = parseAndValidateAdditionalInfo(additional_info);
   } catch (err) {
     return errorResponse(res, err.message, err.statusCode || 400);
   }
@@ -1046,19 +1041,6 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
       } else {
         variants[i].sku = variants[i].sku.toUpperCase().trim();
       }
-    }
-  }
-
-  // ----------- VALIDATE TECHNICAL SPECS (IF PROVIDED) -----------
-  if (technicalSpecifications) {
-    const techSpecErrors = validateTechnicalSpecs(technicalSpecifications);
-    if (techSpecErrors.length > 0) {
-      return errorResponse(
-        res,
-        `Technical specifications validation failed: ${techSpecErrors.join(", ")}`,
-        400,
-        techSpecErrors
-      );
     }
   }
 
@@ -1193,7 +1175,6 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
     product.salePrice = finalSalePrice ? Number(finalSalePrice) : null;
     product.sale_price = finalSalePrice ? Number(finalSalePrice) : null;
   }
-  if (costPrice !== undefined) product.costPrice = costPrice ? Number(costPrice) : null;
   if (tax !== undefined) product.tax = tax ? Number(tax) : null;
   if (brand !== undefined) product.brand = brand;
   if (model !== undefined) product.model = model;
@@ -1203,8 +1184,11 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
   if (condition !== undefined) product.condition = condition || "new";
   if (videoUrl !== undefined) product.videoUrl = videoUrl || null;
   if (variants !== undefined) product.variants = variants || [];
-  if (technicalSpecifications !== undefined) product.technicalSpecifications = technicalSpecifications || null;
   if (galleryImages !== undefined) product.galleryImages = finalGalleryImages;
+  // Update additional_info (completely replace with new structure)
+  if (additional_info !== undefined) {
+    product.additional_info = additional_info;
+  }
 
   // ----------- LEGACY VARIATIONS -----------
   if (variations !== undefined) {
