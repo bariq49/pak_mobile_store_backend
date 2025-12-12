@@ -16,6 +16,8 @@ const errorHandler = require("./middleware/error");
 
 const authRoutes = require("./routes/auth.routes");
 const userRoute = require("./routes/user.routes");
+const adminRoutes = require("./routes/admin.routes");
+const dashboardRoutes = require("./routes/dashboard.routes");
 const categoryRoutes = require("./routes/category.routes");
 const productRoutes = require("./routes/product.routes");
 const dealRoutes = require("./routes/deal.routes");
@@ -28,9 +30,28 @@ const siteSettingRoutes = require("./routes/siteSetting.routes");
 const stripeWebhook = require("./routes/stripeWebhook.route");
 
 app.use("/api/stripe", stripeWebhook);
-// CORS
-app.use(cors());
-app.options("*", cors());
+
+// CORS Configuration
+const corsOptions = {
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://127.0.0.1:3000",
+    process.env.CLIENT_URL, // From .env file
+  ].filter(Boolean), // Remove undefined values
+  credentials: true, // Allow cookies to be sent
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+  ],
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // Security
 app.use(helmet());
@@ -42,15 +63,30 @@ if (process.env.NODE_ENV === "development") {
 
 // Rate limiting
 const limiter = rateLimit({
-  max: 100,
+  max: 1000,
   windowMs: 60 * 60 * 1000,
   message: "Too many requests from this IP, please try again in an hour!",
 });
 app.use("/api", limiter);
-// Body parser
-app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+
+// Body parser - Increased limits to handle large product payloads
+// Note: For multipart/form-data (file uploads), multer handles the parsing
+app.use(express.json({ limit: "50mb" }));
+app.use(express.text({ limit: "50mb", type: "text/plain" })); // Handle text/plain as JSON
+app.use(express.urlencoded({ extended: true, limit: "50mb", parameterLimit: 50000 }));
 app.use(cookieParser());
+
+// Middleware to parse text/plain as JSON if it looks like JSON
+app.use((req, res, next) => {
+  if (req.is("text/plain") && typeof req.body === "string" && req.body.trim().startsWith("{")) {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (err) {
+      // If parsing fails, keep as string
+    }
+  }
+  next();
+});
 
 // Sanitization
 app.use(mongoSanitize());
@@ -79,6 +115,8 @@ app.get("/", (req, res) => {
 // Routes
 app.use("/auth", authRoutes);
 app.use("/api/v1/users", userRoute);
+app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/admin/dashboard", dashboardRoutes);
 app.use("/api/v1/categories", categoryRoutes);
 app.use("/api/v1/products", productRoutes);
 app.use("/api/v1/deals", dealRoutes);

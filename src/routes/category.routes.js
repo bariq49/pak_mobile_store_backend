@@ -2,7 +2,8 @@ const express = require("express");
 const router = express.Router();
 const categoryController = require("../controllers/category.controller");
 const { protect, restrictTo } = require("../middleware/auth.middleware");
-const uploadCategoryFields = require("../utils/uploadCategory"); 
+const uploadCategoryFields = require("../utils/uploadCategory");
+const optionalUploadCategory = require("../utils/uploadCategory").optional;
 
 
 
@@ -34,7 +35,7 @@ router.delete("/:id", categoryController.deleteCategory);
 // SUBCATEGORY CRUD
 router.post(
   "/:parentId/subcategories",
-  uploadCategoryFields,
+  optionalUploadCategory,
   categoryController.createSubCategory
 );
 

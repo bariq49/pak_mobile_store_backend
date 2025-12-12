@@ -1,4 +1,5 @@
 // utils/apiFeatures.js
+const mongoose = require("mongoose");
 const Category = require("../models/category.model");
 const Tag = require("../models/tag.model");
 const Attribute = require("../models/attribute.model");
@@ -72,7 +73,17 @@ class APIFeatures {
 
     /* ---------- SUB CATEGORY (direct) ---------- */
     if (sub_category) {
-      andConditions.push({ subCategory: sub_category });
+      // Support both slug and ObjectId for sub_category
+      if (mongoose.Types.ObjectId.isValid(sub_category)) {
+        // If it's a valid ObjectId, use it directly
+        andConditions.push({ subCategory: sub_category });
+      } else {
+        // If it's a slug, find the category by slug
+        const subCategoryDoc = await Category.findOne({ slug: sub_category });
+        if (subCategoryDoc) {
+          andConditions.push({ subCategory: subCategoryDoc._id });
+        }
+      }
     }
 
     /* ---------- TAGS ---------- */

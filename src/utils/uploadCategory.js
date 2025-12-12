@@ -15,4 +15,19 @@ const uploadCategoryFields = uploadCategory.fields([
   { name: "gallery", maxCount: 5 },
 ]);
 
+// Optional upload middleware - only processes files if multipart/form-data
+// Otherwise allows JSON requests to pass through
+const optionalUploadCategory = (req, res, next) => {
+  const contentType = req.headers["content-type"] || "";
+  
+  // Only use multer if it's multipart/form-data
+  if (contentType.includes("multipart/form-data")) {
+    return uploadCategoryFields(req, res, next);
+  }
+  
+  // For JSON requests, just continue (body already parsed by express.json())
+  next();
+};
+
 module.exports = uploadCategoryFields;
+module.exports.optional = optionalUploadCategory;

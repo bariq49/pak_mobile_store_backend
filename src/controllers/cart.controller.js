@@ -12,13 +12,45 @@ const updateCartTotals = async (cart, userId) => {
   return cart;
 };
 
+/**
+ * Extract product image URL with smart fallback logic
+ * Priority: mainImage (direct URL) → image.original → image.thumbnail → null
+ * @param {Object} product - Product document with populated image
+ * @returns {string|null} - Image URL or null
+ */
+const getProductImageUrl = (product) => {
+  if (!product) return null;
+
+  // Priority 1: mainImage (direct URL string) - preferred for new products
+  if (product.mainImage && typeof product.mainImage === "string" && product.mainImage.trim()) {
+    return product.mainImage.trim();
+  }
+
+  // Priority 2: image.original (from populated Image model)
+  if (product.image && typeof product.image === "object" && product.image.original) {
+    return product.image.original;
+  }
+
+  // Priority 3: image.thumbnail (from populated Image model)
+  if (product.image && typeof product.image === "object" && product.image.thumbnail) {
+    return product.image.thumbnail;
+  }
+
+  // No image available
+  return null;
+};
+
 // Get Cart
 exports.getCart = catchAsync(async (req, res) => {
   let cart = await Cart.findOne({ user: req.user._id })
-    .populate(
-      "items.product",
-      "name slug price sale_price image in_stock quantity shippingFee"
-    )
+    .populate({
+      path: "items.product",
+      select: "name slug price sale_price image mainImage in_stock quantity shippingFee",
+      populate: {
+        path: "image",
+        select: "original thumbnail",
+      },
+    })
     .populate("coupon", "code discountType discountValue expiryDate");
 
   if (!cart)
@@ -30,13 +62,14 @@ exports.getCart = catchAsync(async (req, res) => {
 
   cart = await updateCartTotals(cart, req.user._id);
 
+  // Map cart items with properly resolved image URLs
   const items = cart.items.map((i) => ({
     id: i.product._id,
     name: i.product.name,
     price: i.product.sale_price ?? i.product.price,
     quantity: i.quantity,
     shippingFee: i.product.shippingFee,
-    image: i.product.image,
+    image: getProductImageUrl(i.product),
     slug: i.product.slug,
   }));
 

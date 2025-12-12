@@ -5,7 +5,14 @@ const { protect, restrictTo } = require("../middleware/auth.middleware");
 
 const router = express.Router();
 
-router.use(protect);
+// ============================================
+// USER-ONLY ROUTES (E-commerce site)
+// ============================================
+// All routes under /me/* are restricted to users with role "user"
+// Admins cannot access these routes - they must use admin endpoints
+router.use(protect, restrictTo("user"));
+
+// User Profile
 router
   .route("/me")
   .get(userController.getMe)
@@ -29,8 +36,12 @@ router.patch(
   userController.setDefaultAddress
 );
 
-// Admin Routes
-router.use(restrictTo("admin"));
+// ============================================
+// ADMIN-ONLY ROUTES (Dashboard)
+// ============================================
+// Reset middleware - now require admin role
+router.use(protect, restrictTo("admin"));
+
 router.route("/").get(userController.getAllUsers); 
 router
   .route("/:id")
