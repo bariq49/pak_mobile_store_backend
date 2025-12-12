@@ -222,14 +222,13 @@ exports.getAllProducts = catchAsync(async (req, res, next) => {
 
 // ------------------ GET SINGLE PRODUCT ------------------
 exports.getProduct = catchAsync(async (req, res, next) => {
-  const { id } = req.params;
+  const { slug } = req.params;
 
-  // Validate if id is a valid MongoDB ObjectId
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    return errorResponse(res, "Invalid product ID format", 400);
+  if (!slug || typeof slug !== "string" || slug.trim() === "") {
+    return errorResponse(res, "Product slug is required", 400);
   }
 
-  const product = await Product.findById(id)
+  const product = await Product.findOne({ slug: slug.trim().toLowerCase() })
     .populate("tags", "name slug")
     .populate("category", "name slug")
     .populate("subCategory", "name slug")
@@ -261,7 +260,7 @@ exports.getProduct = catchAsync(async (req, res, next) => {
     });
 
   if (!product)
-    return errorResponse(res, "No product found with that ID", 404);
+    return errorResponse(res, "No product found with that slug", 404);
 
   const productData = product.toObject();
 
@@ -707,8 +706,8 @@ exports.createProduct = catchAsync(async (req, res, next) => {
         type: variation.attribute.type,
         values:
           variation.attribute.values?.map((v) => ({
-            value: v.value,
-            image: v.image || null,
+          value: v.value,
+          image: v.image || null,
           })) || [],
       });
     }

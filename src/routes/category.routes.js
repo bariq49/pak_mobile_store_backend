@@ -11,7 +11,7 @@ const optionalUploadCategory = require("../utils/uploadCategory").optional;
 router.get("", categoryController.getAllCategories);
 router.get("/subcategories", categoryController.getAllSubCategories);
 router.get("/path", categoryController.getAllSubCategories);
-router.get("/:id", categoryController.getCategory);
+router.get("/:slug", categoryController.getCategory);
 
 
 // PROTECTED ROUTES (ADMIN ONLY)

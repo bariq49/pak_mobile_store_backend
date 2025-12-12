@@ -66,16 +66,15 @@ exports.getAllCategories = catchAsync(async (req, res, next) => {
 
 // GET SINGLE CATEGORY
 exports.getCategory = catchAsync(async (req, res, next) => {
-  const { id } = req.params;
+  const { slug } = req.params;
 
-  // Validate if id is a valid MongoDB ObjectId
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    return next(new AppError("Invalid category ID format", 400));
+  if (!slug || typeof slug !== "string" || slug.trim() === "") {
+    return next(new AppError("Category slug is required", 400));
   }
 
-  let category = await Category.findById(id).populate("createdBy", "name email");
+  let category = await Category.findOne({ slug: slug.trim().toLowerCase() }).populate("createdBy", "name email");
 
-  if (!category) return next(new AppError("No category found with that ID", 404));
+  if (!category) return next(new AppError("No category found with that slug", 404));
 
   category = await populateChildrenRecursively(category);
 
@@ -228,8 +227,8 @@ exports.createSubCategory = catchAsync(async (req, res, next) => {
       const files = Array.isArray(req.files[fieldName]) ? req.files[fieldName] : [req.files[fieldName]];
       files.forEach(file => {
         imageArray.push({
-          url: file.path,
-          altText: req.body.altText || "",
+      url: file.path,
+      altText: req.body.altText || "",
           type: fieldName,
         });
       });

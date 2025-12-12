@@ -14,12 +14,13 @@ router.get("/best-seller", productController.getBestSellerProducts);
 router.get("/new-arrival", productController.getNewSellerProducts);
 router.get("/on-sale", productController.getSaleProducts);
 router.get("/top-sales", productController.getTopSalesProducts);
-router.get("/:id", productController.getProduct);
-router.get("/:slug/related", productController.getRelatedProducts);
-
-// Review routes (public and authenticated)
+// Review routes (must come before /:slug to avoid route conflicts)
 router.get("/:id/reviews", reviewController.getProductReviews);
 router.post("/:id/reviews", protect, reviewController.createReview);
+// Related products (must come before /:slug)
+router.get("/:slug/related", productController.getRelatedProducts);
+// Single product by slug (must be last to avoid conflicts)
+router.get("/:slug", productController.getProduct);
 router.patch("/reviews/:reviewId", protect, reviewController.updateReview);
 router.delete("/reviews/:reviewId", protect, reviewController.deleteReview);
 router.patch(

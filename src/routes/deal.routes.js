@@ -16,18 +16,18 @@ router.post(
   dealController.createDeal
 );
 
-// router.put(
-//   "/:id",
-//   protect,
-//   restrictTo("admin"),
-//   uploadDeal.fields([
-//     { name: "desktop", maxCount: 1 },
-//     { name: "mobile", maxCount: 1 },
-//   ]),
-//   dealController.updateDeal
-// );
+router.patch(
+  "/:id",
+  protect,
+  restrictTo("admin"),
+  uploadDeal.fields([
+    { name: "desktop", maxCount: 1 },
+    { name: "mobile", maxCount: 1 },
+  ]),
+  dealController.updateDeal
+);
 
-// router.delete("/:id", protect, restrictTo("admin"), dealController.deleteDeal);
+router.delete("/:id", protect, restrictTo("admin"), dealController.deleteDeal);
 
 // -------------------- PUBLIC ROUTES --------------------
 

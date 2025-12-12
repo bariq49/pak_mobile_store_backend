@@ -16,12 +16,14 @@ exports.signup = catchAsync(async (req, res, next) => {
   if (password !== passwordConfirm) {
     return next(new AppError("Passwords do not match", 400));
   }
+  // 🔒 SECURITY: Force role to "user" - prevent admin creation from e-commerce site
+  // Ignore any role sent from frontend - e-commerce site can only create regular users
   const newUser = await User.create({
     name,
     email,
     password,
     passwordConfirm,
-    role: role || "user",
+    role: "user", // Always "user" - never allow admin creation from this endpoint
   });
 
   // Send welcome email (non-blocking - don't fail signup if email fails)
@@ -50,6 +52,14 @@ exports.login = catchAsync(async (req, res, next) => {
   const user = await User.findOne({ email }).select("+password");
   if (!user || !(await user.correctPassword(password, user.password))) {
     return next(new AppError("Incorrect email or password", 401));
+  }
+
+  // 🔒 SECURITY: Regular login endpoint only allows users with role "user"
+  // Admins must use /auth/admin/login endpoint
+  if (user.role === "admin") {
+    return next(
+      new AppError("Access denied. Please use admin login for administrator accounts.", 403)
+    );
   }
 
   createSendToken(user, 200, res, "login successfully");

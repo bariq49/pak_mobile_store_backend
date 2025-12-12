@@ -16,6 +16,7 @@ const errorHandler = require("./middleware/error");
 
 const authRoutes = require("./routes/auth.routes");
 const userRoute = require("./routes/user.routes");
+const adminRoutes = require("./routes/admin.routes");
 const categoryRoutes = require("./routes/category.routes");
 const productRoutes = require("./routes/product.routes");
 const dealRoutes = require("./routes/deal.routes");
@@ -34,6 +35,7 @@ const corsOptions = {
   origin: [
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:3002",
     "http://127.0.0.1:3000",
     process.env.CLIENT_URL, // From .env file
   ].filter(Boolean), // Remove undefined values
@@ -112,6 +114,7 @@ app.get("/", (req, res) => {
 // Routes
 app.use("/auth", authRoutes);
 app.use("/api/v1/users", userRoute);
+app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/categories", categoryRoutes);
 app.use("/api/v1/products", productRoutes);
 app.use("/api/v1/deals", dealRoutes);
