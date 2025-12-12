@@ -17,6 +17,7 @@ const errorHandler = require("./middleware/error");
 const authRoutes = require("./routes/auth.routes");
 const userRoute = require("./routes/user.routes");
 const adminRoutes = require("./routes/admin.routes");
+const dashboardRoutes = require("./routes/dashboard.routes");
 const categoryRoutes = require("./routes/category.routes");
 const productRoutes = require("./routes/product.routes");
 const dealRoutes = require("./routes/deal.routes");
@@ -62,7 +63,7 @@ if (process.env.NODE_ENV === "development") {
 
 // Rate limiting
 const limiter = rateLimit({
-  max: 100,
+  max: 1000,
   windowMs: 60 * 60 * 1000,
   message: "Too many requests from this IP, please try again in an hour!",
 });
@@ -115,6 +116,7 @@ app.get("/", (req, res) => {
 app.use("/auth", authRoutes);
 app.use("/api/v1/users", userRoute);
 app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/admin/dashboard", dashboardRoutes);
 app.use("/api/v1/categories", categoryRoutes);
 app.use("/api/v1/products", productRoutes);
 app.use("/api/v1/deals", dealRoutes);
