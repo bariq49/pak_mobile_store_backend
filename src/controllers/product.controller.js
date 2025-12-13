@@ -66,32 +66,48 @@ const findCategoryByIdOrName = async (categoryInput) => {
 
 /**
  * Find subcategory within a parent category by ID, name, or slug
+ * Subcategories are separate Category documents with a parent reference
  * @param {object} parentCategory - Parent category document
- * @param {string} subCategoryInput - Subcategory identifier
- * @returns {object|null} Subcategory subdocument or null
+ * @param {string} subCategoryInput - Subcategory identifier (ID, name, or slug)
+ * @returns {Promise<object|null>} Subcategory document or null
  */
-const findSubCategory = (parentCategory, subCategoryInput) => {
-  if (!parentCategory || !subCategoryInput || !parentCategory.children) return null;
+const findSubCategory = async (parentCategory, subCategoryInput) => {
+  if (!parentCategory || !subCategoryInput) return null;
   
   const trimmedInput = String(subCategoryInput).trim();
+  if (!trimmedInput) return null;
   
-  // Try to find by ObjectId
+  const parentCategoryId = parentCategory._id || parentCategory;
+  
+  let subCategoryDoc = null;
+  
+  // Try to find by ObjectId first
   if (isValidObjectId(trimmedInput)) {
-    const subById = parentCategory.children.id(trimmedInput);
-    if (subById) return subById;
+    subCategoryDoc = await Category.findById(trimmedInput);
+    if (subCategoryDoc) {
+      // Verify it belongs to the parent category
+      const subParentId = subCategoryDoc.parent?._id || subCategoryDoc.parent;
+      if (String(subParentId) === String(parentCategoryId)) {
+        return subCategoryDoc;
+      }
+      // If parent doesn't match, return null
+      return null;
+    }
   }
   
-  // Try to find by slug
-  const subBySlug = parentCategory.children.find(
-    child => child.slug && child.slug.toLowerCase() === trimmedInput.toLowerCase()
-  );
-  if (subBySlug) return subBySlug;
+  // Try to find by slug (case-insensitive)
+  subCategoryDoc = await Category.findOne({ 
+    slug: trimmedInput.toLowerCase(),
+    parent: parentCategoryId 
+  });
+  if (subCategoryDoc) return subCategoryDoc;
   
-  // Try to find by name
-  const subByName = parentCategory.children.find(
-    child => child.name && child.name.toLowerCase() === trimmedInput.toLowerCase()
-  );
-  if (subByName) return subByName;
+  // Try to find by name (case-insensitive) and verify parent
+  subCategoryDoc = await Category.findOne({ 
+    name: { $regex: new RegExp(`^${trimmedInput}$`, 'i') },
+    parent: parentCategoryId 
+  });
+  if (subCategoryDoc) return subCategoryDoc;
   
   return null;
 };
@@ -442,6 +458,37 @@ const parseArray = (data, fieldName) => {
   return data;
 };
 
+/**
+ * Normalize boolean value from various formats (string, boolean, undefined, null)
+ * Handles: "true", "false", true, false, undefined, null, ""
+ * @param {any} value - Value to normalize
+ * @param {boolean} defaultValue - Default value if value is undefined/null/empty
+ * @returns {boolean} Normalized boolean
+ */
+const normalizeBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const lowerValue = value.toLowerCase().trim();
+    if (lowerValue === "true" || lowerValue === "1" || lowerValue === "yes") {
+      return true;
+    }
+    if (lowerValue === "false" || lowerValue === "0" || lowerValue === "no" || lowerValue === "") {
+      return false;
+    }
+  }
+  // For numbers: 0 = false, anything else = true
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  // Default: convert to boolean
+  return Boolean(value);
+};
+
 // ------------------ HELPER: Extract Cloudinary URL from uploaded file ------------------
 const getUploadedImageUrl = (file) => {
   if (!file) return null;
@@ -570,7 +617,7 @@ exports.createProduct = catchAsync(async (req, res, next) => {
   // Validate subcategory if provided
   let subCategoryId = null;
   if (subCategory) {
-    const subCategoryDoc = findSubCategory(categoryDoc, subCategory);
+    const subCategoryDoc = await findSubCategory(categoryDoc, subCategory);
     if (!subCategoryDoc) {
       return errorResponse(
         res, 
@@ -746,18 +793,25 @@ exports.createProduct = catchAsync(async (req, res, next) => {
   }
 
   // ----------- SALE FIELDS VALIDATION -----------
+  // Normalize on_sale to proper boolean (handles string "true"/"false" from form data)
+  const finalOnSale = normalizeBoolean(on_sale, false);
   const finalSalePrice = salePrice || sale_price;
 
-  if (on_sale && finalSalePrice >= price) {
-    return errorResponse(res, "Sale price must be less than regular price", 400);
-  }
+  // Only validate sale fields if on_sale is explicitly true
+  if (finalOnSale === true) {
+    // If on_sale is true, sale price must be provided and less than regular price
+    if (finalSalePrice && finalSalePrice >= price) {
+      return errorResponse(res, "Sale price must be less than regular price", 400);
+    }
 
-  if (on_sale && (!sale_start || !sale_end)) {
-    return errorResponse(
-      res,
-      "Both sale_start and sale_end are required when on_sale is true",
-      400
-    );
+    // If on_sale is true, sale_start and sale_end are required
+    if (!sale_start || !sale_end) {
+      return errorResponse(
+        res,
+        "Both sale_start and sale_end are required when on_sale is true",
+        400
+      );
+    }
   }
 
   // ----------- DETERMINE PRODUCT TYPE -----------
@@ -807,9 +861,9 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     // System fields
     additional_info,
     product_type: finalProductType,
-    on_sale: on_sale || false,
-    sale_start: on_sale ? new Date(sale_start) : null,
-    sale_end: on_sale ? new Date(sale_end) : null,
+    on_sale: finalOnSale,
+    sale_start: finalOnSale ? new Date(sale_start) : null,
+    sale_end: finalOnSale ? new Date(sale_end) : null,
     max_price: finalProductType === "variable" ? max_price : null,
     min_price: finalProductType === "variable" ? min_price : null,
     variations: variationIds,
@@ -952,11 +1006,11 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
       if (subCategory === null || subCategory === "") {
         subCategoryId = null;
       } else {
-        const subCategoryDoc = findSubCategory(categoryDoc, subCategory);
+        const subCategoryDoc = await findSubCategory(categoryDoc, subCategory);
         if (!subCategoryDoc) {
           return errorResponse(
             res,
-            `Sub-category "${subCategory}" not found in category "${categoryDoc.name}".`,
+            `Sub-category "${subCategory}" not found in category "${categoryDoc.name}". Please provide a valid sub-category ID, name, or slug.`,
             404
           );
         }
@@ -1142,12 +1196,18 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
   const finalPrice = price !== undefined ? Number(price) : product.price;
 
   if (on_sale !== undefined) {
-    product.on_sale = on_sale || false;
+    // Normalize on_sale to proper boolean (handles string "true"/"false" from form data)
+    const finalOnSale = normalizeBoolean(on_sale, false);
+    product.on_sale = finalOnSale;
 
-    if (on_sale && finalSalePrice !== undefined) {
-      if (finalSalePrice >= finalPrice) {
-        return errorResponse(res, "Sale price must be less than regular price", 400);
+    // Only validate sale fields if on_sale is explicitly true
+    if (finalOnSale === true) {
+      if (finalSalePrice !== undefined) {
+        if (finalSalePrice >= finalPrice) {
+          return errorResponse(res, "Sale price must be less than regular price", 400);
+        }
       }
+      // If on_sale is true, sale_start and sale_end are required
       if (!sale_start || !sale_end) {
         return errorResponse(
           res,
@@ -1157,7 +1217,8 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
       }
       product.sale_start = new Date(sale_start);
       product.sale_end = new Date(sale_end);
-    } else if (!on_sale) {
+    } else {
+      // If on_sale is false, clear sale dates
       product.sale_start = null;
       product.sale_end = null;
     }
@@ -1309,47 +1370,68 @@ exports.getProductsByCategorySubCategories = catchAsync(
   async (req, res, next) => {
     const { parent: parentSlug, child: childSlug } = req.query;
 
-    // Step 1: Base filter
-    const filter = {};
-    const andConditions = [];
-
-    // Step 2: Parent category check
+    // Step 1: Validate parent category exists (if provided)
     if (parentSlug) {
       const parentCategory = await Category.findOne({ slug: parentSlug });
       if (!parentCategory) {
         return errorResponse(res, "Parent category not found", 404);
       }
-      andConditions.push({ category: parentCategory._id });
 
-      // Step 3: Child category check (only if child is provided)
-      if (childSlug) {
-        const childCategory = parentCategory.children.find(
-          (child) => child.slug === childSlug
-        );
+      // Step 2: Validate child category exists (only if child is provided and not empty)
+      if (childSlug && childSlug.trim() !== "") {
+        const trimmedChildSlug = childSlug.trim().toLowerCase();
+        
+        // Query child category directly from database (more reliable than virtual)
+        // Try exact match first
+        let childCategory = await Category.findOne({
+          slug: trimmedChildSlug,
+          parent: parentCategory._id, // Ensure it belongs to the parent
+        });
+        
+        // If not found, try case-insensitive search
         if (!childCategory) {
-          return errorResponse(res, "Child category not found", 404);
+          childCategory = await Category.findOne({
+            slug: { $regex: new RegExp(`^${trimmedChildSlug}$`, 'i') },
+            parent: parentCategory._id,
+          });
         }
-        andConditions.push({ subCategory: childCategory._id });
+        
+        if (!childCategory) {
+          // Get list of available children for better error message
+          const availableChildren = await Category.find({ parent: parentCategory._id }).select("slug name");
+          const childrenList = availableChildren.map(c => `"${c.slug}" (${c.name})`).join(", ");
+          
+          return errorResponse(
+            res, 
+            `Child category "${childSlug}" not found in parent category "${parentSlug}". ` +
+            (availableChildren.length > 0 
+              ? `Available children: ${childrenList}` 
+              : `This parent category has no children.`), 
+            404
+          );
+        }
       }
     }
 
-    // Apply category filters
-    if (andConditions.length > 0) {
-      filter.$and = andConditions;
-    }
+    // Step 3: Use APIFeatures to build all filters (it handles parent/child logic correctly)
+    // Create base query
+    let query = Product.find();
 
-    // Step 4: Create count query with all filters
-    const countQuery = new APIFeatures(Product.find(filter), req.query);
-    await countQuery.buildFilters();
-
-    // Get the count of filtered products
-    const filteredCount = await countQuery.query.countDocuments();
-
-    // Step 5: Query with all filters + pagination
-    const features = new APIFeatures(Product.find(filter), req.query);
+    // Step 4: Apply all filters using APIFeatures (includes parent/child handling)
+    // Note: buildFilters() throws AppError which is caught by catchAsync middleware
+    const features = new APIFeatures(query, req.query);
     await features.buildFilters();
-    features.sort().limitFields().paginate(filteredCount); // Use filtered count
 
+    // Step 5: Get the filter object that was built
+    const filter = features.query.getFilter();
+
+    // Step 6: Count total products AFTER applying all filters
+    const totalProducts = await Product.countDocuments(filter);
+
+    // Step 7: Apply sorting, field limiting, and pagination
+    features.sort().limitFields().paginate(totalProducts);
+
+    // Step 8: Execute query with population
     const products = await features.query
       .populate("tags", "name slug")
       .populate("category", "name slug")
@@ -1367,6 +1449,7 @@ exports.getProductsByCategorySubCategories = catchAsync(
       })
       .populate("image gallery", "original thumbnail");
 
+    // Step 9: Format products with additional_info
     const formattedProducts = products.map((p) => ({
       ...p.toObject(),
       additional_info: formatAdditionalInfo(p.toObject()),
@@ -1376,7 +1459,7 @@ exports.getProductsByCategorySubCategories = catchAsync(
       res,
       {
         products: formattedProducts,
-        pagination: features.pagination, // Make sure to include pagination in response
+        pagination: features.pagination,
       },
       "Products fetched successfully by parent & child category"
     );
