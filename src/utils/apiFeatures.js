@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const Category = require("../models/category.model");
 const Tag = require("../models/tag.model");
 const Attribute = require("../models/attribute.model");
+const AppError = require("./appError");
 
 class APIFeatures {
   constructor(query, queryString) {
@@ -50,24 +51,64 @@ class APIFeatures {
         "children"
       );
       if (!parentCategory)
-        throw new Error(`Parent category "${parent}" not found`);
+        throw new AppError(`Parent category "${parent}" not found`, 404);
 
-      if (child) {
-        const childCategory = parentCategory.children.find(
-          (c) => c.slug === child
-        );
-        if (!childCategory)
-          throw new Error(`Child category "${child}" not found`);
+      // Handle child parameter (only if provided and not empty)
+      if (child && child.trim() !== "") {
+        const childSlug = child.trim().toLowerCase();
+        
+        // Query child category directly from database (more reliable than virtual)
+        // Try exact match first
+        let childCategory = await Category.findOne({
+          slug: childSlug,
+          parent: parentCategory._id, // Ensure it belongs to the parent
+        });
+        
+        // If not found, try case-insensitive search
+        if (!childCategory) {
+          childCategory = await Category.findOne({
+            slug: { $regex: new RegExp(`^${childSlug}$`, 'i') },
+            parent: parentCategory._id,
+          });
+        }
+        
+        if (!childCategory) {
+          // Get list of available children for better error message
+          const availableChildren = await Category.find({ parent: parentCategory._id }).select("slug name");
+          const childrenList = availableChildren.map(c => `"${c.slug}" (${c.name})`).join(", ");
+          
+          throw new AppError(
+            `Child category "${child}" not found in parent category "${parent}". ` +
+            (availableChildren.length > 0 
+              ? `Available children: ${childrenList}` 
+              : `This parent category has no children.`),
+            404
+          );
+        }
 
+        // Filter by specific subcategory
         andConditions.push({ subCategory: childCategory._id });
       } else {
-        const allChildIds = parentCategory.children.map((c) => c._id);
-        andConditions.push({
-          $or: [
-            { category: parentCategory._id },
-            { subCategory: { $in: allChildIds } },
-          ],
-        });
+        // No child specified - return products from parent category and all its subcategories
+        // Ensure children is an array (might be undefined if no children)
+        const children = Array.isArray(parentCategory.children) ? parentCategory.children : [];
+        const allChildIds = children.length > 0
+          ? children.map((c) => c && c._id).filter(Boolean)
+          : [];
+
+        // If parent has children, include products from both parent and children
+        // If parent has no children, only include products directly in parent category
+        if (allChildIds.length > 0) {
+          andConditions.push({
+            $or: [
+              { category: parentCategory._id },
+              { subCategory: { $in: allChildIds } },
+            ],
+          });
+        } else {
+          // Parent category has no children - only return products directly in this category
+          andConditions.push({ category: parentCategory._id });
+        }
       }
     }
 

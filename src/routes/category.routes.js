@@ -10,6 +10,7 @@ const optionalUploadCategory = require("../utils/uploadCategory").optional;
 // PUBLIC ROUTES
 router.get("", categoryController.getAllCategories);
 router.get("/subcategories", categoryController.getAllSubCategories);
+router.get("/subcategories/:id", categoryController.getSubCategory); // Get single subcategory by ID
 router.get("/path", categoryController.getAllSubCategories);
 router.get("/:slug", categoryController.getCategory);
 

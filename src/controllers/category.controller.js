@@ -72,13 +72,86 @@ exports.getCategory = catchAsync(async (req, res, next) => {
     return next(new AppError("Category slug is required", 400));
   }
 
-  let category = await Category.findOne({ slug: slug.trim().toLowerCase() }).populate("createdBy", "name email");
+  let category = await Category.findOne({ slug: slug.trim().toLowerCase() })
+    .populate("createdBy", "name email")
+    .populate("parent", "name slug _id"); // Populate parent if it's a subcategory
 
   if (!category) return next(new AppError("No category found with that slug", 404));
 
   category = await populateChildrenRecursively(category);
 
   return successResponse(res, { category }, "Category fetched successfully with nested children");
+});
+
+// GET SINGLE SUBCATEGORY BY ID
+exports.getSubCategory = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  // Validate if id is a valid MongoDB ObjectId
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new AppError("Invalid subcategory ID format", 400));
+  }
+
+  const subCategory = await Category.findById(id)
+    .populate("createdBy", "name email")
+    .populate("parent", "name slug _id type") // Populate parent category
+    .populate("ancestors", "name slug _id"); // Populate ancestors if any
+
+  if (!subCategory) {
+    return next(new AppError("No subcategory found with that ID", 404));
+  }
+
+  // Check if it's actually a subcategory (has a parent)
+  // Note: Allow subcategories with null parent (might be old data or edge case)
+  // But warn if parent is missing
+  if (!subCategory.parent) {
+    console.warn(`Subcategory ${id} has no parent category. This might be old data.`);
+  }
+
+  // Convert to plain object - Mongoose will automatically convert ObjectIds to strings in JSON
+  // But we need to ensure populated fields are properly formatted
+  const subCategoryObj = subCategory.toObject({ virtuals: true });
+
+  // Ensure parent field is safe (even if null)
+  if (subCategoryObj.parent) {
+    // Parent is populated, ensure it has an id field
+    subCategoryObj.parent = {
+      _id: subCategoryObj.parent._id,
+      id: subCategoryObj.parent._id ? subCategoryObj.parent._id.toString() : null,
+      name: subCategoryObj.parent.name || null,
+      slug: subCategoryObj.parent.slug || null,
+      type: subCategoryObj.parent.type || null,
+    };
+  } else {
+    // Parent is null or not populated - set to null explicitly
+    subCategoryObj.parent = null;
+  }
+
+  // Ensure createdBy is safe
+  if (subCategoryObj.createdBy) {
+    subCategoryObj.createdBy = {
+      _id: subCategoryObj.createdBy._id,
+      id: subCategoryObj.createdBy._id ? subCategoryObj.createdBy._id.toString() : null,
+      name: subCategoryObj.createdBy.name || null,
+      email: subCategoryObj.createdBy.email || null,
+    };
+  } else {
+    subCategoryObj.createdBy = null;
+  }
+
+  // Ensure ancestors array is safe
+  if (subCategoryObj.ancestors && Array.isArray(subCategoryObj.ancestors)) {
+    subCategoryObj.ancestors = subCategoryObj.ancestors.map(ancestor => ({
+      _id: ancestor._id,
+      id: ancestor._id ? ancestor._id.toString() : null,
+      name: ancestor.name || null,
+      slug: ancestor.slug || null,
+    }));
+  } else {
+    subCategoryObj.ancestors = [];
+  }
+
+  return successResponse(res, { subCategory: subCategoryObj }, "Subcategory fetched successfully");
 });
 
 
