@@ -719,7 +719,7 @@ exports.createProduct = catchAsync(async (req, res, next) => {
       }
       
       // Explicitly construct variant object with all fields to ensure nothing is lost
-      return {
+      const variantObj = {
         storage: variant.storage,
         ram: variant.ram,
         color: variant.color,
@@ -728,8 +728,15 @@ exports.createProduct = catchAsync(async (req, res, next) => {
         price: variant.price !== undefined ? Number(variant.price) : undefined,
         stock: variant.stock !== undefined ? Number(variant.stock) : 0,
         sku: variant.sku,
-        image: imageUrl, // ✅ Explicitly include image field
       };
+      
+      // Only include image field if it has a valid value
+      // Don't include undefined/null/empty - let Mongoose handle it naturally
+      if (imageUrl !== undefined && imageUrl !== null && imageUrl !== "") {
+        variantObj.image = imageUrl;
+      }
+      
+      return variantObj;
     });
   }
 
@@ -1136,16 +1143,21 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
     variants = variants.map((variant) => {
       // Clean image URL if present
       let imageUrl = variant.image;
+      
+      // Handle different image value types
       if (imageUrl && typeof imageUrl === "string") {
         imageUrl = imageUrl.trim();
-        // Only keep non-empty strings (undefined won't be saved by Mongoose)
-        if (imageUrl === "") {
+        // Only keep non-empty strings
+        if (imageUrl === "" || imageUrl === "null" || imageUrl === "undefined") {
           imageUrl = undefined;
         }
+      } else if (imageUrl === null || imageUrl === "null") {
+        // Explicitly handle null values from frontend
+        imageUrl = undefined;
       }
       
       // Explicitly construct variant object with all fields to ensure nothing is lost
-      return {
+      const variantObj = {
         storage: variant.storage,
         ram: variant.ram,
         color: variant.color,
@@ -1154,8 +1166,15 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
         price: variant.price !== undefined ? Number(variant.price) : undefined,
         stock: variant.stock !== undefined ? Number(variant.stock) : 0,
         sku: variant.sku,
-        image: imageUrl, // ✅ Explicitly include image field
       };
+      
+      // Only include image field if it has a valid value
+      // Don't include undefined - this prevents Mongoose from saving null
+      if (imageUrl !== undefined && imageUrl !== null && imageUrl !== "") {
+        variantObj.image = imageUrl;
+      }
+      
+      return variantObj;
     });
   }
 
