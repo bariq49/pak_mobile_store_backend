@@ -501,11 +501,19 @@ const processVariantImages = (files, variants) => {
   if (!variants || !Array.isArray(variants)) return variants;
 
   return variants.map((variant, index) => {
+    // Preserve existing image URL if already set (from JSON body)
+    const existingImage = variant.image;
+    
     // Check for individual variant image field (variant_0_image, variant_1_image, etc.)
     const variantImageField = `variant_${index}_image`;
     if (files[variantImageField]?.length) {
+      // Uploaded file takes priority over existing image
       variant.image = getUploadedImageUrl(files[variantImageField][0]);
+    } else if (existingImage && typeof existingImage === "string" && existingImage.trim()) {
+      // Preserve image URL from JSON body if no file upload
+      variant.image = existingImage.trim();
     }
+    
     return variant;
   });
 };
@@ -664,17 +672,33 @@ exports.createProduct = catchAsync(async (req, res, next) => {
   ];
 
   // ----------- PROCESS VARIANT IMAGES -----------
-  if (variants && variants.length > 0 && req.files) {
-    variants = processVariantImages(req.files, variants);
+  if (variants && variants.length > 0) {
+    // Process variant images from file uploads (if any)
+    if (req.files) {
+      variants = processVariantImages(req.files, variants);
 
-    // Also check for variantImages array field
-    if (req.files.variantImages?.length) {
-      req.files.variantImages.forEach((file, index) => {
-        if (variants[index] && !variants[index].image) {
-          variants[index].image = getUploadedImageUrl(file);
-        }
-      });
+      // Also check for variantImages array field
+      if (req.files.variantImages?.length) {
+        req.files.variantImages.forEach((file, index) => {
+          if (variants[index] && !variants[index].image) {
+            variants[index].image = getUploadedImageUrl(file);
+          }
+        });
+      }
     }
+    
+    // Ensure variant images from JSON body are preserved (even if no file uploads)
+    // Clean and validate image URLs - this ensures URLs sent in JSON are saved
+    variants = variants.map((variant) => {
+      if (variant.image && typeof variant.image === "string") {
+        variant.image = variant.image.trim();
+        // Remove empty strings
+        if (variant.image === "") {
+          variant.image = undefined;
+        }
+      }
+      return variant;
+    });
   }
 
   // ----------- VALIDATE VARIANTS (IF PROVIDED) -----------
@@ -1059,17 +1083,33 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
   }
 
   // ----------- PROCESS VARIANT IMAGES -----------
-  if (variants && variants.length > 0 && req.files) {
-    variants = processVariantImages(req.files, variants);
+  if (variants && variants.length > 0) {
+    // Process variant images from file uploads (if any)
+    if (req.files) {
+      variants = processVariantImages(req.files, variants);
 
-    // Also check for variantImages array field
-    if (req.files.variantImages?.length) {
-      req.files.variantImages.forEach((file, index) => {
-        if (variants[index] && !variants[index].image) {
-          variants[index].image = getUploadedImageUrl(file);
-        }
-      });
+      // Also check for variantImages array field
+      if (req.files.variantImages?.length) {
+        req.files.variantImages.forEach((file, index) => {
+          if (variants[index] && !variants[index].image) {
+            variants[index].image = getUploadedImageUrl(file);
+          }
+        });
+      }
     }
+    
+    // Ensure variant images from JSON body are preserved (even if no file uploads)
+    // Clean and validate image URLs - this ensures URLs sent in JSON are saved
+    variants = variants.map((variant) => {
+      if (variant.image && typeof variant.image === "string") {
+        variant.image = variant.image.trim();
+        // Remove empty strings
+        if (variant.image === "") {
+          variant.image = undefined;
+        }
+      }
+      return variant;
+    });
   }
 
   // ----------- VALIDATE VARIANTS (IF PROVIDED) -----------
