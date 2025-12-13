@@ -10,7 +10,7 @@ exports.signToken = (user) =>
     }
   );
 
-exports.createSendToken = (user, statusCode, res, message = "Success") => {
+exports.createSendToken = (user, statusCode, res, message = "Success", cookieName = "jwt") => {
   const token = this.signToken(user);
 
   const cookieOptions = {
@@ -22,7 +22,7 @@ exports.createSendToken = (user, statusCode, res, message = "Success") => {
     sameSite: "Strict",
     path: "/",
   };
-  res.cookie("auth_token", token, cookieOptions);
+  res.cookie(cookieName, token, cookieOptions);
   user.password = undefined;
 
   return successResponse(res, { token, user }, message, statusCode);

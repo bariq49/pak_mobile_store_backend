@@ -39,7 +39,7 @@ exports.signup = catchAsync(async (req, res, next) => {
     console.error("Welcome email failed to send:", emailError.message);
   }
 
-  createSendToken(newUser, 201, res, "User registered successfully");
+  createSendToken(newUser, 201, res, "User registered successfully", "user_token");
 });
 
 exports.login = catchAsync(async (req, res, next) => {
@@ -62,13 +62,14 @@ exports.login = catchAsync(async (req, res, next) => {
     );
   }
 
-  createSendToken(user, 200, res, "login successfully");
+  createSendToken(user, 200, res, "login successfully", "user_token");
 });
 
 exports.logout = (req, res) => {
-  res.cookie("jwt", "loggedout", {
+  res.cookie("user_token", "loggedout", {
     expires: new Date(Date.now() + 10 * 1000),
     httpOnly: true,
+    path: "/",
   });
 
   return successResponse(res, {}, "Logged out successfully", 200);
@@ -129,7 +130,7 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
   user.passwordResetExpires = undefined;
   await user.save();
 
-  createSendToken(user, 200, res);
+  createSendToken(user, 200, res, "Password reset successful", "user_token");
 });
 
 exports.updatePassword = catchAsync(async (req, res, next) => {
@@ -143,7 +144,7 @@ exports.updatePassword = catchAsync(async (req, res, next) => {
   user.passwordConfirm = req.body.newPasswordConfirm;
   await user.save();
 
-  createSendToken(user, 200, res);
+  createSendToken(user, 200, res, "Password updated successfully", "user_token");
 });
 
 // ============================================
@@ -200,7 +201,7 @@ exports.adminSignup = catchAsync(async (req, res, next) => {
     console.error("Admin welcome email failed:", emailError.message);
   }
 
-  createSendToken(newAdmin, 201, res, "Admin registered successfully");
+  createSendToken(newAdmin, 201, res, "Admin registered successfully", "admin_token");
 });
 
 /**
@@ -229,16 +230,17 @@ exports.adminLogin = catchAsync(async (req, res, next) => {
     );
   }
 
-  createSendToken(user, 200, res, "Admin login successful");
+  createSendToken(user, 200, res, "Admin login successful", "admin_token");
 });
 
 /**
  * Admin Logout
  */
 exports.adminLogout = (req, res) => {
-  res.cookie("jwt", "loggedout", {
+  res.cookie("admin_token", "loggedout", {
     expires: new Date(Date.now() + 10 * 1000),
     httpOnly: true,
+    path: "/",
   });
 
   return successResponse(res, {}, "Admin logged out successfully", 200);
@@ -304,7 +306,7 @@ exports.adminResetPassword = catchAsync(async (req, res, next) => {
   user.passwordResetExpires = undefined;
   await user.save();
 
-  createSendToken(user, 200, res, "Admin password reset successful");
+  createSendToken(user, 200, res, "Admin password reset successful", "admin_token");
 });
 
 /**
@@ -325,5 +327,5 @@ exports.adminUpdatePassword = catchAsync(async (req, res, next) => {
   user.passwordConfirm = req.body.newPasswordConfirm;
   await user.save();
 
-  createSendToken(user, 200, res, "Admin password updated successfully");
+  createSendToken(user, 200, res, "Admin password updated successfully", "admin_token");
 });

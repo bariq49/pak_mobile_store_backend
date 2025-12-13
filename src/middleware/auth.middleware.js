@@ -7,12 +7,24 @@ const AppError = require("../utils/appError");
 // Protect routes (only logged in users)
 exports.protect = catchAsync(async (req, res, next) => {
   let token;
+  
+  // Priority 1: Check Authorization header (Bearer token)
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
     token = req.headers.authorization.split(" ")[1];
-  } else if (req.cookies.jwt) {
+  } 
+  // Priority 2: Check admin_token cookie (for admin dashboard)
+  else if (req.cookies.admin_token && req.cookies.admin_token !== "loggedout") {
+    token = req.cookies.admin_token;
+  }
+  // Priority 3: Check user_token cookie (for e-commerce site)
+  else if (req.cookies.user_token && req.cookies.user_token !== "loggedout") {
+    token = req.cookies.user_token;
+  }
+  // Priority 4: Legacy support - check jwt cookie (for backward compatibility)
+  else if (req.cookies.jwt && req.cookies.jwt !== "loggedout") {
     token = req.cookies.jwt;
   }
 
@@ -46,10 +58,12 @@ exports.restrictTo = (...roles) => {
 
 // For rendered pages (optional)
 exports.isLoggedIn = async (req, res, next) => {
-  if (req.cookies.jwt) {
+  let token = req.cookies.admin_token || req.cookies.user_token || req.cookies.jwt;
+  
+  if (token && token !== "loggedout") {
     try {
       const decoded = await promisify(jwt.verify)(
-        req.cookies.jwt,
+        token,
         process.env.JWT_SECRET
       );
       const currentUser = await User.findById(decoded.id);

@@ -221,10 +221,14 @@ exports.getAllProducts = catchAsync(async (req, res, next) => {
     })
     .populate("image gallery", "original thumbnail");
 
-  const formattedProducts = products.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedProducts = products.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   return successResponse(
     res,
@@ -288,6 +292,9 @@ exports.getProduct = catchAsync(async (req, res, next) => {
     helpfulUsers: undefined,
     notHelpfulUsers: undefined,
   }));
+
+  // Format variants: ensure image field is always present (even if null/undefined)
+  productData.variants = formatVariantsForResponse(productData.variants);
 
   // Format additional_info
   productData.additional_info = formatAdditionalInfo(productData);
@@ -496,6 +503,16 @@ const getUploadedImageUrl = (file) => {
   return file.path || file.secure_url || file.url || null;
 };
 
+// ------------------ HELPER: Format variants for response (ensure image field is always present) ------------------
+const formatVariantsForResponse = (variants) => {
+  if (!variants || !Array.isArray(variants)) return variants;
+  
+  return variants.map((variant) => ({
+    ...variant,
+    image: variant.image || null, // ✅ Always include image field (null if not set)
+  }));
+};
+
 // ------------------ HELPER: Process variant images from uploaded files ------------------
 const processVariantImages = (files, variants) => {
   if (!variants || !Array.isArray(variants)) return variants;
@@ -689,15 +706,37 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     
     // Ensure variant images from JSON body are preserved (even if no file uploads)
     // Clean and validate image URLs - this ensures URLs sent in JSON are saved
+    // Explicitly construct variant objects to ensure all fields (including image) are preserved
     variants = variants.map((variant) => {
-      if (variant.image && typeof variant.image === "string") {
-        variant.image = variant.image.trim();
-        // Remove empty strings
-        if (variant.image === "") {
-          variant.image = undefined;
+      // Clean image URL if present
+      let imageUrl = variant.image;
+      if (imageUrl && typeof imageUrl === "string") {
+        imageUrl = imageUrl.trim();
+        // Only keep non-empty strings (undefined won't be saved by Mongoose)
+        if (imageUrl === "") {
+          imageUrl = undefined;
         }
       }
-      return variant;
+      
+      // Explicitly construct variant object with all fields to ensure nothing is lost
+      const variantObj = {
+        storage: variant.storage,
+        ram: variant.ram,
+        color: variant.color,
+        bundle: variant.bundle,
+        warranty: variant.warranty,
+        price: variant.price !== undefined ? Number(variant.price) : undefined,
+        stock: variant.stock !== undefined ? Number(variant.stock) : 0,
+        sku: variant.sku,
+      };
+      
+      // Only include image field if it has a valid value
+      // Don't include undefined/null/empty - let Mongoose handle it naturally
+      if (imageUrl !== undefined && imageUrl !== null && imageUrl !== "") {
+        variantObj.image = imageUrl;
+      }
+      
+      return variantObj;
     });
   }
 
@@ -1100,15 +1139,42 @@ exports.updateProduct = catchAsync(async (req, res, next) => {
     
     // Ensure variant images from JSON body are preserved (even if no file uploads)
     // Clean and validate image URLs - this ensures URLs sent in JSON are saved
+    // Explicitly construct variant objects to ensure all fields (including image) are preserved
     variants = variants.map((variant) => {
-      if (variant.image && typeof variant.image === "string") {
-        variant.image = variant.image.trim();
-        // Remove empty strings
-        if (variant.image === "") {
-          variant.image = undefined;
+      // Clean image URL if present
+      let imageUrl = variant.image;
+      
+      // Handle different image value types
+      if (imageUrl && typeof imageUrl === "string") {
+        imageUrl = imageUrl.trim();
+        // Only keep non-empty strings
+        if (imageUrl === "" || imageUrl === "null" || imageUrl === "undefined") {
+          imageUrl = undefined;
         }
+      } else if (imageUrl === null || imageUrl === "null") {
+        // Explicitly handle null values from frontend
+        imageUrl = undefined;
       }
-      return variant;
+      
+      // Explicitly construct variant object with all fields to ensure nothing is lost
+      const variantObj = {
+        storage: variant.storage,
+        ram: variant.ram,
+        color: variant.color,
+        bundle: variant.bundle,
+        warranty: variant.warranty,
+        price: variant.price !== undefined ? Number(variant.price) : undefined,
+        stock: variant.stock !== undefined ? Number(variant.stock) : 0,
+        sku: variant.sku,
+      };
+      
+      // Only include image field if it has a valid value
+      // Don't include undefined - this prevents Mongoose from saving null
+      if (imageUrl !== undefined && imageUrl !== null && imageUrl !== "") {
+        variantObj.image = imageUrl;
+      }
+      
+      return variantObj;
     });
   }
 
@@ -1390,10 +1456,14 @@ exports.getProductsByCategory = catchAsync(async (req, res, next) => {
     })
     .populate("image gallery", "original thumbnail");
 
-  const formattedProducts = products.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedProducts = products.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   return successResponse(
     res,
@@ -1538,10 +1608,14 @@ exports.getSaleProducts = catchAsync(async (req, res, next) => {
     .populate("image gallery", "original thumbnail");
 
   // Format products
-  const formattedProducts = products.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedProducts = products.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   // Success response
   return successResponse(
@@ -1592,10 +1666,14 @@ exports.getNewSellerProducts = catchAsync(async (req, res, next) => {
     .populate("image gallery", "original thumbnail");
 
   // Format products
-  const formattedProducts = products.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedProducts = products.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   // Success response
   return successResponse(
@@ -1656,10 +1734,14 @@ exports.getBestSellerProducts = catchAsync(async (req, res, next) => {
     .populate("image gallery", "original thumbnail");
 
   // Format products
-  const formattedProducts = products.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedProducts = products.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   // Success response
   return successResponse(
@@ -1726,10 +1808,14 @@ exports.getRelatedProducts = catchAsync(async (req, res, next) => {
     .populate("image gallery", "original thumbnail");
 
   // 7. Format products
-  const formattedProducts = relatedProducts.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedProducts = relatedProducts.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   // 8. Response
   return successResponse(
@@ -1802,10 +1888,14 @@ exports.getTopSalesProducts = catchAsync(async (req, res, next) => {
       return errorResponse(res, "No products available", 404);
     }
 
-    const formattedTopRated = products.map((p) => ({
-      ...p.toObject(),
-      additional_info: formatAdditionalInfo(p.toObject()),
-    }));
+    const formattedTopRated = products.map((p) => {
+      const productObj = p.toObject();
+      return {
+        ...productObj,
+        variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+        additional_info: formatAdditionalInfo(productObj),
+      };
+    });
 
     return successResponse(
       res,
@@ -1815,10 +1905,14 @@ exports.getTopSalesProducts = catchAsync(async (req, res, next) => {
   }
 
   // 🔹 Step 3: Return top-selling products
-  const formattedTopSales = products.map((p) => ({
-    ...p.toObject(),
-    additional_info: formatAdditionalInfo(p.toObject()),
-  }));
+  const formattedTopSales = products.map((p) => {
+    const productObj = p.toObject();
+    return {
+      ...productObj,
+      variants: formatVariantsForResponse(productObj.variants), // ✅ Format variants
+      additional_info: formatAdditionalInfo(productObj),
+    };
+  });
 
   return successResponse(
     res,

@@ -113,7 +113,7 @@ app.get("/", (req, res) => {
 });
 
 // Routes
-app.use("/auth", authRoutes);
+app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", userRoute);
 app.use("/api/v1/admin", adminRoutes);
 app.use("/api/v1/admin/dashboard", dashboardRoutes);
