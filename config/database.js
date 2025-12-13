@@ -27,7 +27,6 @@ const connectDB = async () => {
     // Provide helpful error messages
     if (error.message.includes("ETIMEOUT") || error.message.includes("queryTxt")) {
       console.error("\n💡 Possible Solutions:");
-      console.error("1. Check your internet connection");
       console.error("2. If using MongoDB Atlas, ensure your cluster is not paused");
       console.error("3. Check if your IP is whitelisted in MongoDB Atlas");
       console.error("4. Verify your MONGO_URI in .env file is correct");
