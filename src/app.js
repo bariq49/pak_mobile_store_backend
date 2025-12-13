@@ -38,6 +38,7 @@ const corsOptions = {
     "http://localhost:3001",
     "http://localhost:3002",
     "http://127.0.0.1:3000",
+    "https://pakmobilestore.es",
     process.env.CLIENT_URL, // From .env file
   ].filter(Boolean), // Remove undefined values
   credentials: true, // Allow cookies to be sent

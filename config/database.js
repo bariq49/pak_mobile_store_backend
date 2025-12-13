@@ -23,8 +23,7 @@ const connectDB = async () => {
     console.log(`📊 Database: ${mongoose.connection.name}`);
     console.log(`🔗 Host: ${mongoose.connection.host}`);
   } catch (error) {
-    console.error("❌ MongoDB Connection Failed:", error.message);
-    
+     
     // Provide helpful error messages
     if (error.message.includes("ETIMEOUT") || error.message.includes("queryTxt")) {
       console.error("\n💡 Possible Solutions:");
