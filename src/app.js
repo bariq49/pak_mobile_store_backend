@@ -39,6 +39,7 @@ const corsOptions = {
     "http://localhost:3002",
     "http://127.0.0.1:3000",
     "https://pakmobilestore.es",
+    "https://pakmobilestore.es",
     "https://pak-mobile-admin-dashboard.vercel.app",
     process.env.CLIENT_URL, // From .env file
   ].filter(Boolean), // Remove undefined values
