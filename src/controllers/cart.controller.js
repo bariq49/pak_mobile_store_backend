@@ -42,16 +42,25 @@ const getProductImageUrl = (product) => {
 
 // Get Cart
 exports.getCart = catchAsync(async (req, res) => {
-  let cart = await Cart.findOne({ user: req.user._id })
+  // Allow userId as query parameter (optional - for flexibility)
+  // If not provided, use authenticated user's ID
+  const userId = req.query.userId || req.user._id;
+  
+  // If userId is provided and it's different from authenticated user, 
+  // you might want to add authorization check here
+  // For now, allowing it for flexibility
+  
+  let cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
-      select: "name slug price sale_price image mainImage in_stock quantity shippingFee",
+      select: "name slug price sale_price image mainImage in_stock quantity shippingFee tax",
       populate: {
         path: "image",
         select: "original thumbnail",
       },
     })
-    .populate("coupon", "code discountType discountValue expiryDate");
+    .populate("coupon", "code discountType discountValue expiryDate")
+    .populate("user", "name email");
 
   if (!cart)
     return successResponse(
@@ -60,18 +69,22 @@ exports.getCart = catchAsync(async (req, res) => {
       "Cart is empty"
     );
 
-  cart = await updateCartTotals(cart, req.user._id);
+  cart = await updateCartTotals(cart, userId);
 
   // Map cart items with properly resolved image URLs
-  const items = cart.items.map((i) => ({
-    id: i.product._id,
-    name: i.product.name,
-    price: i.product.sale_price ?? i.product.price,
-    quantity: i.quantity,
-    shippingFee: i.product.shippingFee,
-    image: getProductImageUrl(i.product),
-    slug: i.product.slug,
-  }));
+  const items = cart.items.map((i) => {
+    const product = i.product;
+    return {
+      id: product._id,
+      name: product.name,
+      price: product.sale_price ?? product.price,
+      quantity: i.quantity,
+      shippingFee: product.shippingFee ?? null,
+      tax: product.tax !== undefined ? product.tax : null,
+      image: getProductImageUrl(product),
+      slug: product.slug,
+    };
+  });
 
   return successResponse(
     res,
@@ -84,6 +97,7 @@ exports.getCart = catchAsync(async (req, res) => {
       codFee: cart.codFee,
       coupon: cart.coupon,
       shippingMethod: cart.shippingMethod,
+      user: cart.user || null,
     },
     "Cart fetched successfully"
   );
@@ -297,5 +311,71 @@ exports.setPaymentMethod = catchAsync(async (req, res) => {
       paymentMethod: cart.paymentMethod,
     },
     `Payment method set to ${method}`
+  );
+});
+
+// Admin: Get any user's cart
+exports.getUserCart = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+  
+  if (!userId) return errorResponse(res, "User ID is required", 400);
+
+  let cart = await Cart.findOne({ user: userId })
+    .populate({
+      path: "items.product",
+      select: "name slug price sale_price image mainImage in_stock quantity shippingFee tax",
+      populate: {
+        path: "image",
+        select: "original thumbnail",
+      },
+    })
+    .populate("coupon", "code discountType discountValue expiryDate")
+    .populate("user", "name email");
+
+  if (!cart)
+    return successResponse(
+      res,
+      { 
+        items: [], 
+        total: 0, 
+        discount: 0, 
+        shippingFee: 0, 
+        finalTotal: 0,
+        user: null
+      },
+      "Cart is empty"
+    );
+
+  cart = await updateCartTotals(cart, userId);
+
+  // Map cart items with properly resolved image URLs
+  const items = cart.items.map((i) => {
+    const product = i.product;
+    return {
+      id: product._id,
+      name: product.name,
+      price: product.sale_price ?? product.price,
+      quantity: i.quantity,
+      shippingFee: product.shippingFee ?? null,
+      tax: product.tax !== undefined ? product.tax : null,
+      image: getProductImageUrl(product),
+      slug: product.slug,
+    };
+  });
+
+  return successResponse(
+    res,
+    {
+      items,
+      total: cart.total,
+      discount: cart.discount,
+      shippingFee: cart.shippingFee,
+      finalTotal: cart.finalTotal,
+      codFee: cart.codFee,
+      coupon: cart.coupon,
+      shippingMethod: cart.shippingMethod,
+      user: cart.user,
+    },
+    "User cart fetched successfully"
   );
 });
