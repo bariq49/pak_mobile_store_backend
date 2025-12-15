@@ -13,17 +13,23 @@ const {
 const siteSettingModel = require("../models/siteSetting.model");
 
 const calculateCartTotals = async (cart, userId, userAddress = {}) => {
-  // Fetch products
+  // Fetch products with all fields including tax
   const productIds = cart.items.map((it) =>
     typeof it.product === "object" ? it.product._id : it.product
   );
-  const products = await Product.find({ _id: { $in: productIds } });
+  // Use lean() to get plain objects with all fields including tax
+  const products = await Product.find({ _id: { $in: productIds } }).lean();
 
   // Calculate subtotal + total weight
   let subtotal = 0;
   let totalWeight = 0;
 
   for (const item of cart.items) {
+    // Preserve tax from originally populated product before replacing
+    const originalTax = typeof item.product === "object" && item.product.tax !== undefined 
+      ? item.product.tax 
+      : undefined;
+    
     const product = products.find(
       (p) =>
         p._id.toString() ===
@@ -39,7 +45,17 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
     const weight = product.weight ?? 0;
     totalWeight += weight * item.quantity;
 
-    item.product = product;
+    // Replace product with fetched product (lean() already gives us plain object)
+    // Get tax value - use product.tax if it exists (even if 0), otherwise use originalTax, otherwise null
+    const taxValue = product.tax !== undefined 
+      ? product.tax 
+      : (originalTax !== undefined ? originalTax : null);
+    
+    // Ensure tax is explicitly set on the product object
+    item.product = {
+      ...product,
+      tax: taxValue
+    };
   }
 
   // Coupon logic
