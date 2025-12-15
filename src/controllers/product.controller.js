@@ -523,12 +523,20 @@ const processVariantImages = (files, variants) => {
     
     // Check for individual variant image field (variant_0_image, variant_1_image, etc.)
     const variantImageField = `variant_${index}_image`;
+    
+    console.log(`Checking ${variantImageField}:`, files[variantImageField] ? '✅ Found' : '❌ Not found');
+    
     if (files[variantImageField]?.length) {
       // Uploaded file takes priority over existing image
-      variant.image = getUploadedImageUrl(files[variantImageField][0]);
-    } else if (existingImage && typeof existingImage === "string" && existingImage.trim()) {
-      // Preserve image URL from JSON body if no file upload
+      const imageUrl = getUploadedImageUrl(files[variantImageField][0]);
+      console.log(`✅ Setting image for variant ${index} from file:`, imageUrl);
+      variant.image = imageUrl;
+    } else if (existingImage && typeof existingImage === "string" && existingImage.trim() && !existingImage.startsWith('blob:')) {
+      // Preserve image URL from JSON body if no file upload (but not blob URLs)
+      console.log(`✅ Keeping existing image URL for variant ${index}:`, existingImage);
       variant.image = existingImage.trim();
+    } else {
+      console.log(`⚠️ No image for variant ${index} - existingImage:`, existingImage);
     }
     
     return variant;
@@ -708,14 +716,19 @@ exports.createProduct = catchAsync(async (req, res, next) => {
     // Clean and validate image URLs - this ensures URLs sent in JSON are saved
     // Explicitly construct variant objects to ensure all fields (including image) are preserved
     variants = variants.map((variant) => {
-      // Clean image URL if present
+      // Get image URL - could be from file upload or JSON body
       let imageUrl = variant.image;
+      
+      // Clean and validate image URL
       if (imageUrl && typeof imageUrl === "string") {
         imageUrl = imageUrl.trim();
-        // Only keep non-empty strings (undefined won't be saved by Mongoose)
-        if (imageUrl === "") {
+        // Filter out empty strings, "null", "undefined" strings
+        if (imageUrl === "" || imageUrl === "null" || imageUrl === "undefined" || imageUrl.toLowerCase() === "null") {
           imageUrl = undefined;
         }
+      } else if (imageUrl === null) {
+        // Explicit null becomes undefined (won't be saved)
+        imageUrl = undefined;
       }
       
       // Explicitly construct variant object with all fields to ensure nothing is lost
@@ -730,11 +743,13 @@ exports.createProduct = catchAsync(async (req, res, next) => {
         sku: variant.sku,
       };
       
-      // Only include image field if it has a valid value
-      // Don't include undefined/null/empty - let Mongoose handle it naturally
-      if (imageUrl !== undefined && imageUrl !== null && imageUrl !== "") {
-        variantObj.image = imageUrl;
+      // Only include image field if it has a valid, non-empty value
+      // This prevents saving null/undefined/empty strings
+      if (imageUrl && typeof imageUrl === "string" && imageUrl.trim() !== "") {
+        variantObj.image = imageUrl.trim();
       }
+      // If imageUrl is undefined/null/empty, don't include the field at all
+      // Mongoose won't save it, and response formatter will add null for consistency
       
       return variantObj;
     });

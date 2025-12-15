@@ -9,13 +9,23 @@ const APIFeatures = require("../utils/apiFeatures");
 const { deleteFromCloudinary } = require("../../config/cloudinary");
 
 // ---------------- CREATE DEAL ----------------
-exports.createDeal = catchAsync(async (req, res) => {
+exports.createDeal = catchAsync(async (req, res, next) => {
   let dealData = req.body;
+
+  // Debug: Log incoming request
+  console.log("=== CREATE DEAL REQUEST ===");
+  console.log("Body type:", typeof req.body);
+  console.log("Has deal field:", !!req.body.deal);
+  console.log("Has files:", !!req.files);
+  if (req.files) {
+    console.log("Files received:", Object.keys(req.files));
+  }
 
   if (typeof req.body.deal === "string") {
     try {
       dealData = JSON.parse(req.body.deal);
-    } catch {
+    } catch (parseError) {
+      console.error("JSON parse error:", parseError);
       return errorResponse(res, "Invalid JSON in deal field", 400);
     }
   }
@@ -36,18 +46,59 @@ exports.createDeal = catchAsync(async (req, res) => {
     btnText,
   } = dealData;
 
+  // Ensure arrays are actually arrays
+  const productsArray = Array.isArray(products) ? products : [];
+  const categoriesArray = Array.isArray(categories) ? categories : [];
+  const subCategoriesArray = Array.isArray(subCategories) ? subCategories : [];
+
   if (!title || !discountType || !discountValue || !startDate || !endDate) {
     return errorResponse(res, "Missing required fields", 400);
   }
 
+  // Validate discountType
+  if (!["percentage", "fixed", "flat"].includes(discountType)) {
+    return errorResponse(
+      res,
+      "Invalid discountType. Must be 'percentage', 'fixed', or 'flat'",
+      400
+    );
+  }
+
+  // Validate discountValue
+  if (isNaN(discountValue) || discountValue < 0) {
+    return errorResponse(res, "discountValue must be a positive number", 400);
+  }
+
+  // Validate dates
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return errorResponse(res, "Invalid date format", 400);
+  }
+  if (start >= end) {
+    return errorResponse(res, "startDate must be before endDate", 400);
+  }
+
   // ✅ Validate Products
   let validProducts = [];
-  if (products.length > 0) {
+  if (productsArray.length > 0) {
+    // Validate all product IDs are valid ObjectIds
+    const invalidProductIds = productsArray.filter(
+      (id) => !mongoose.Types.ObjectId.isValid(id)
+    );
+    if (invalidProductIds.length > 0) {
+      return errorResponse(
+        res,
+        `Invalid product ID format: ${invalidProductIds.join(", ")}`,
+        400
+      );
+    }
+
     const productDocs = await Product.find({
-      _id: { $in: products.map((id) => new mongoose.Types.ObjectId(id)) },
+      _id: { $in: productsArray.map((id) => new mongoose.Types.ObjectId(id)) },
     }).select("_id name");
-    if (productDocs.length !== products.length) {
-      const missing = products.filter(
+    if (productDocs.length !== productsArray.length) {
+      const missing = productsArray.filter(
         (id) => !productDocs.some((p) => p._id.toString() === id)
       );
       return errorResponse(
@@ -61,12 +112,24 @@ exports.createDeal = catchAsync(async (req, res) => {
 
   // ✅ Validate Categories
   let validCategories = [];
-  if (categories.length > 0) {
+  if (categoriesArray.length > 0) {
+    // Validate all category IDs are valid ObjectIds
+    const invalidCategoryIds = categoriesArray.filter(
+      (id) => !mongoose.Types.ObjectId.isValid(id)
+    );
+    if (invalidCategoryIds.length > 0) {
+      return errorResponse(
+        res,
+        `Invalid category ID format: ${invalidCategoryIds.join(", ")}`,
+        400
+      );
+    }
+
     const categoryDocs = await Category.find({
-      _id: { $in: categories.map((id) => new mongoose.Types.ObjectId(id)) },
+      _id: { $in: categoriesArray.map((id) => new mongoose.Types.ObjectId(id)) },
     }).select("_id name");
-    if (categoryDocs.length !== categories.length) {
-      const missing = categories.filter(
+    if (categoryDocs.length !== categoriesArray.length) {
+      const missing = categoriesArray.filter(
         (id) => !categoryDocs.some((c) => c._id.toString() === id)
       );
       return errorResponse(
@@ -80,12 +143,24 @@ exports.createDeal = catchAsync(async (req, res) => {
 
   // ✅ Validate SubCategories
   let validSubCategories = [];
-  if (subCategories.length > 0) {
+  if (subCategoriesArray.length > 0) {
+    // Validate all subCategory IDs are valid ObjectIds
+    const invalidSubCategoryIds = subCategoriesArray.filter(
+      (id) => !mongoose.Types.ObjectId.isValid(id)
+    );
+    if (invalidSubCategoryIds.length > 0) {
+      return errorResponse(
+        res,
+        `Invalid subCategory ID format: ${invalidSubCategoryIds.join(", ")}`,
+        400
+      );
+    }
+
     const subDocs = await Category.find({
-      _id: { $in: subCategories.map((id) => new mongoose.Types.ObjectId(id)) },
+      _id: { $in: subCategoriesArray.map((id) => new mongoose.Types.ObjectId(id)) },
     }).select("_id name");
-    if (subDocs.length !== subCategories.length) {
-      const missing = subCategories.filter(
+    if (subDocs.length !== subCategoriesArray.length) {
+      const missing = subCategoriesArray.filter(
         (id) => !subDocs.some((c) => c._id.toString() === id)
       );
       return errorResponse(
@@ -100,36 +175,67 @@ exports.createDeal = catchAsync(async (req, res) => {
   // ✅ Handle Images
   let image = { desktop: null, mobile: null };
   if (req.files?.desktop?.[0]) {
-    image.desktop = {
-      url: req.files.desktop[0].path,
-      public_id: req.files.desktop[0].filename,
-    };
+    const desktopFile = req.files.desktop[0];
+    // Cloudinary returns URL in path, secure_url, or url property
+    const desktopUrl = desktopFile.path || desktopFile.secure_url || desktopFile.url;
+    // Cloudinary returns public_id in filename or public_id property
+    const desktopPublicId = desktopFile.filename || desktopFile.public_id;
+    
+    if (desktopUrl) {
+      image.desktop = {
+        url: desktopUrl,
+        public_id: desktopPublicId || null,
+      };
+    }
   }
   if (req.files?.mobile?.[0]) {
-    image.mobile = {
-      url: req.files.mobile[0].path,
-      public_id: req.files.mobile[0].filename,
-    };
+    const mobileFile = req.files.mobile[0];
+    // Cloudinary returns URL in path, secure_url, or url property
+    const mobileUrl = mobileFile.path || mobileFile.secure_url || mobileFile.url;
+    // Cloudinary returns public_id in filename or public_id property
+    const mobilePublicId = mobileFile.filename || mobileFile.public_id;
+    
+    if (mobileUrl) {
+      image.mobile = {
+        url: mobileUrl,
+        public_id: mobilePublicId || null,
+      };
+    }
   }
 
-  const deal = await Deal.create({
+  // Debug: Log data before creation
+  console.log("Deal data to create:", {
     title,
-    description,
     discountType,
     discountValue,
-    startDate,
-    endDate,
-    products: validProducts,
-    categories: validCategories,
-    subCategories: validSubCategories,
-    isGlobal,
-    isActive,
-    priority,
-    image,
-    btnText,
+    startDate: new Date(startDate),
+    endDate: new Date(endDate),
+    productsCount: validProducts.length,
+    categoriesCount: validCategories.length,
+    subCategoriesCount: validSubCategories.length,
+    hasImage: !!image.desktop || !!image.mobile,
     createdBy: req.user?._id,
   });
 
+  const deal = await Deal.create({
+      title,
+      description,
+      discountType,
+      discountValue,
+      startDate: new Date(startDate),
+      endDate: new Date(endDate),
+      products: validProducts,
+      categories: validCategories,
+      subCategories: validSubCategories,
+      isGlobal,
+      isActive,
+      priority,
+      image,
+      btnText,
+      createdBy: req.user?._id,
+    });
+
+  console.log("✅ Deal created successfully:", deal._id);
   return successResponse(res, { deal }, "Deal created successfully", 201);
 });
 
