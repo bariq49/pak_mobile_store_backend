@@ -39,7 +39,29 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
     );
     if (!product) continue;
 
-    const price = product.sale_price ?? product.price ?? 0;
+    // Use variant price if variantId is present, otherwise use product price
+    let price = product.sale_price ?? product.price ?? 0;
+    
+    // Check if this item has a variant and use variant price
+    if (item.variantId && product.variants && Array.isArray(product.variants)) {
+      // Helper to find variant by ID, handling different formats
+      const variantIdStr = String(item.variantId).trim();
+      let variant = product.variants.find(
+        (v) => v._id && v._id.toString() === variantIdStr
+      );
+      
+      // If not found, try extracting ObjectId part (handles "ObjectId.1" format)
+      if (!variant && variantIdStr.includes('.')) {
+        const objectIdPart = variantIdStr.split('.')[0];
+        variant = product.variants.find(
+          (v) => v._id && v._id.toString() === objectIdPart
+        );
+      }
+      if (variant && variant.price !== undefined && variant.price !== null) {
+        price = variant.price;
+      }
+    }
+    
     subtotal += price * item.quantity;
 
     const weight = product.weight ?? 0;

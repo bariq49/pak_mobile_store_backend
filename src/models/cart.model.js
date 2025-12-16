@@ -9,6 +9,14 @@ const cartItemSchema = new mongoose.Schema(
       index: true,
     },
     quantity: { type: Number, required: true, min: 1, default: 1 },
+    // Variant support: store the variant identifier (from product.variants array)
+    // Can be the variant _id (ObjectId) or a string identifier
+    // Stored as String to handle various formats from frontend
+    variantId: { 
+      type: String, 
+      default: null,
+      index: true,
+    },
   },
   { _id: false }
 );
