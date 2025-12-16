@@ -40,6 +40,48 @@ const getProductImageUrl = (product) => {
   return null;
 };
 
+/**
+ * Find variant by ID, handling different ID formats
+ * Handles formats like: ObjectId, "ObjectId.1", array index, etc.
+ * @param {Array} variants - Array of variant objects
+ * @param {string} variantId - Variant identifier from frontend
+ * @returns {Object|null} - Found variant or null
+ */
+const findVariantById = (variants, variantId) => {
+  if (!variants || !Array.isArray(variants) || !variantId) return null;
+  
+  const variantIdStr = String(variantId).trim();
+  
+  // Try 1: Direct ObjectId match
+  let variant = variants.find(
+    (v) => v._id && v._id.toString() === variantIdStr
+  );
+  if (variant) return variant;
+  
+  // Try 2: Extract ObjectId part (before first dot) - handles "ObjectId.1" format
+  if (variantIdStr.includes('.')) {
+    const objectIdPart = variantIdStr.split('.')[0];
+    variant = variants.find(
+      (v) => v._id && v._id.toString() === objectIdPart
+    );
+    if (variant) return variant;
+  }
+  
+  // Try 3: Match by string comparison (for any other format)
+  variant = variants.find(
+    (v) => v._id && String(v._id) === variantIdStr
+  );
+  if (variant) return variant;
+  
+  // Try 4: Array index (if variantId is a number)
+  const index = parseInt(variantIdStr, 10);
+  if (!isNaN(index) && index >= 0 && index < variants.length) {
+    return variants[index];
+  }
+  
+  return null;
+};
+
 // Get Cart
 exports.getCart = catchAsync(async (req, res) => {
   // Allow userId as query parameter (optional - for flexibility)
@@ -53,7 +95,7 @@ exports.getCart = catchAsync(async (req, res) => {
   let cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
-      select: "name slug price sale_price image mainImage in_stock quantity shippingFee tax",
+      select: "name slug price sale_price image mainImage in_stock quantity shippingFee tax variants",
       populate: {
         path: "image",
         select: "original thumbnail",
@@ -71,18 +113,53 @@ exports.getCart = catchAsync(async (req, res) => {
 
   cart = await updateCartTotals(cart, userId);
 
-  // Map cart items with properly resolved image URLs
+  // Map cart items with properly resolved image URLs and variant information
   const items = cart.items.map((i) => {
     const product = i.product;
+    
+    // Find variant if variantId is present
+    let selectedVariant = null;
+    let itemPrice = product.sale_price ?? product.price;
+    let itemImage = getProductImageUrl(product);
+    
+    if (i.variantId && product.variants && Array.isArray(product.variants)) {
+      selectedVariant = findVariantById(product.variants, i.variantId);
+      
+      if (selectedVariant) {
+        // Use variant price if available
+        if (selectedVariant.price !== undefined && selectedVariant.price !== null) {
+          itemPrice = selectedVariant.price;
+        }
+        
+        // Use variant image if available, otherwise fall back to product image
+        if (selectedVariant.image && selectedVariant.image.trim()) {
+          itemImage = selectedVariant.image.trim();
+        }
+      }
+    }
+    
     return {
       id: product._id,
       name: product.name,
-      price: product.sale_price ?? product.price,
+      price: itemPrice,
       quantity: i.quantity,
       shippingFee: product.shippingFee ?? null,
       tax: product.tax !== undefined ? product.tax : null,
-      image: getProductImageUrl(product),
+      image: itemImage,
       slug: product.slug,
+      variantId: i.variantId || null,
+      variant: selectedVariant ? {
+        _id: selectedVariant._id,
+        storage: selectedVariant.storage || null,
+        ram: selectedVariant.ram || null,
+        color: selectedVariant.color || null,
+        bundle: selectedVariant.bundle || null,
+        warranty: selectedVariant.warranty || null,
+        price: selectedVariant.price || null,
+        stock: selectedVariant.stock || null,
+        sku: selectedVariant.sku || null,
+        image: selectedVariant.image || null,
+      } : null,
     };
   });
 
@@ -105,28 +182,101 @@ exports.getCart = catchAsync(async (req, res) => {
 
 // Add to cart
 exports.addToCart = catchAsync(async (req, res) => {
-  const { productId, quantity = 1 } = req.body;
+  const { productId, variantId, quantity = 1 } = req.body;
   if (!productId) return errorResponse(res, "Product ID is required", 400);
 
   const product = await Product.findById(productId);
   if (!product) return errorResponse(res, "Product not found", 404);
-  if (!product.in_stock) return errorResponse(res, "Product out of stock", 400);
-  if (product.quantity < quantity)
-    return errorResponse(res, "Insufficient stock", 400);
+  
+  let selectedVariant = null;
+  
+  // If variantId is provided, validate and find the variant
+  if (variantId) {
+    if (!product.variants || !Array.isArray(product.variants)) {
+      return errorResponse(res, "This product does not have variants", 400);
+    }
+    
+    // Find the variant using flexible matching
+    selectedVariant = findVariantById(product.variants, variantId);
+    
+    if (!selectedVariant) {
+      return errorResponse(res, "Variant not found for this product", 404);
+    }
+    
+    // Check variant stock
+    if (selectedVariant.stock === undefined || selectedVariant.stock === null) {
+      return errorResponse(res, "Variant stock information not available", 400);
+    }
+    
+    if (selectedVariant.stock < quantity) {
+      return errorResponse(res, "Insufficient variant stock", 400);
+    }
+  } else {
+    // For simple products (no variant), check product stock
+    if (!product.in_stock) {
+      return errorResponse(res, "Product out of stock", 400);
+    }
+    
+    // For variable products without variant selection, check if any variant has stock
+    if (product.product_type === "variable") {
+      if (!product.variants || product.variants.length === 0) {
+        return errorResponse(res, "Please select a variant for this product", 400);
+      }
+      // If it's a variable product but no variant selected, don't allow adding
+      return errorResponse(res, "Variant selection is required for this product", 400);
+    }
+    
+    // For simple products, check quantity
+    if (product.quantity < quantity) {
+      return errorResponse(res, "Insufficient stock", 400);
+    }
+  }
 
   let cart = await Cart.findOne({ user: req.user._id });
+  
+  // Normalize variantId: extract ObjectId part if format is "ObjectId.something"
+  let normalizedVariantId = null;
+  if (variantId && selectedVariant && selectedVariant._id) {
+    // Store the actual variant ObjectId for consistency
+    normalizedVariantId = selectedVariant._id.toString();
+  } else if (variantId) {
+    // If variantId is a string with dot, extract the ObjectId part
+    const variantIdStr = String(variantId).trim();
+    if (variantIdStr.includes('.')) {
+      normalizedVariantId = variantIdStr.split('.')[0];
+    } else {
+      normalizedVariantId = variantIdStr;
+    }
+  }
+  
+  // Create cart item with variant support
+  const cartItem = {
+    product: productId,
+    quantity,
+    ...(normalizedVariantId && { variantId: normalizedVariantId }),
+  };
+  
   if (!cart) {
     cart = await Cart.create({
       user: req.user._id,
-      items: [{ product: productId, quantity }],
+      items: [cartItem],
     });
   } else {
-    const existingItem = cart.items.find(
-      (i) => i.product.toString() === productId
-    );
-    existingItem
-      ? (existingItem.quantity += quantity)
-      : cart.items.push({ product: productId, quantity });
+    // Find existing item: match by product AND variantId (if provided)
+    // Same product with different variants should be separate items
+    const existingItem = cart.items.find((i) => {
+      const productMatch = i.product.toString() === productId.toString();
+      const variantMatch = variantId 
+        ? (i.variantId && i.variantId.toString() === variantId.toString())
+        : (!i.variantId || i.variantId === null);
+      return productMatch && variantMatch;
+    });
+    
+    if (existingItem) {
+      existingItem.quantity += quantity;
+    } else {
+      cart.items.push(cartItem);
+    }
     await cart.save();
   }
 
@@ -137,20 +287,58 @@ exports.addToCart = catchAsync(async (req, res) => {
 //  Update item quantity
 exports.updateCartItem = catchAsync(async (req, res) => {
   const { productId } = req.params;
-  const { quantity } = req.body;
+  const { quantity, variantId } = req.body;
 
   const cart = await Cart.findOne({ user: req.user._id });
   if (!cart) return errorResponse(res, "Cart not found", 404);
 
-  const item = cart.items.find((i) => i.product.toString() === productId);
+  // Find item by productId and variantId (if provided)
+  const item = cart.items.find((i) => {
+    const productMatch = i.product.toString() === productId.toString();
+    const variantMatch = variantId 
+      ? (i.variantId && i.variantId.toString() === variantId.toString())
+      : (!i.variantId || i.variantId === null);
+    return productMatch && variantMatch;
+  });
+  
   if (!item) return errorResponse(res, "Product not in cart", 404);
 
   if (quantity <= 0) {
-    cart.items = cart.items.filter((i) => i.product.toString() !== productId);
+    // Remove item: filter by both productId and variantId
+    cart.items = cart.items.filter((i) => {
+      const productMatch = i.product.toString() === productId.toString();
+      const variantMatch = variantId 
+        ? (i.variantId && i.variantId.toString() === variantId.toString())
+        : (!i.variantId || i.variantId === null);
+      return !(productMatch && variantMatch);
+    });
   } else {
     const product = await Product.findById(productId);
-    if (!product || !product.in_stock || product.quantity < quantity)
-      return errorResponse(res, "Insufficient stock", 400);
+    if (!product) return errorResponse(res, "Product not found", 404);
+    
+    // Check stock based on whether variant is used
+    if (variantId && item.variantId) {
+      // Check variant stock
+      if (!product.variants || !Array.isArray(product.variants)) {
+        return errorResponse(res, "Product variants not found", 400);
+      }
+      
+      const variant = findVariantById(product.variants, variantId);
+      
+      if (!variant) {
+        return errorResponse(res, "Variant not found", 404);
+      }
+      
+      if (variant.stock === undefined || variant.stock === null || variant.stock < quantity) {
+        return errorResponse(res, "Insufficient variant stock", 400);
+      }
+    } else {
+      // Check product stock for simple products
+      if (!product.in_stock || product.quantity < quantity) {
+        return errorResponse(res, "Insufficient stock", 400);
+      }
+    }
+    
     item.quantity = quantity;
   }
 
@@ -161,10 +349,20 @@ exports.updateCartItem = catchAsync(async (req, res) => {
 //  Remove item
 exports.removeFromCart = catchAsync(async (req, res) => {
   const { productId } = req.params;
+  const { variantId } = req.query; // Accept variantId as query parameter
+  
   const cart = await Cart.findOne({ user: req.user._id });
   if (!cart) return errorResponse(res, "Cart not found", 404);
 
-  cart.items = cart.items.filter((i) => i.product.toString() !== productId);
+  // Remove item by productId and variantId (if provided)
+  cart.items = cart.items.filter((i) => {
+    const productMatch = i.product.toString() === productId.toString();
+    const variantMatch = variantId 
+      ? (i.variantId && i.variantId.toString() === variantId.toString())
+      : (!i.variantId || i.variantId === null);
+    return !(productMatch && variantMatch);
+  });
+  
   await updateCartTotals(cart, req.user._id);
 
   return successResponse(res, { cart }, "Item removed from cart");
@@ -323,7 +521,7 @@ exports.getUserCart = catchAsync(async (req, res) => {
   let cart = await Cart.findOne({ user: userId })
     .populate({
       path: "items.product",
-      select: "name slug price sale_price image mainImage in_stock quantity shippingFee tax",
+      select: "name slug price sale_price image mainImage in_stock quantity shippingFee tax variants",
       populate: {
         path: "image",
         select: "original thumbnail",
@@ -348,18 +546,53 @@ exports.getUserCart = catchAsync(async (req, res) => {
 
   cart = await updateCartTotals(cart, userId);
 
-  // Map cart items with properly resolved image URLs
+  // Map cart items with properly resolved image URLs and variant information
   const items = cart.items.map((i) => {
     const product = i.product;
+    
+    // Find variant if variantId is present
+    let selectedVariant = null;
+    let itemPrice = product.sale_price ?? product.price;
+    let itemImage = getProductImageUrl(product);
+    
+    if (i.variantId && product.variants && Array.isArray(product.variants)) {
+      selectedVariant = findVariantById(product.variants, i.variantId);
+      
+      if (selectedVariant) {
+        // Use variant price if available
+        if (selectedVariant.price !== undefined && selectedVariant.price !== null) {
+          itemPrice = selectedVariant.price;
+        }
+        
+        // Use variant image if available, otherwise fall back to product image
+        if (selectedVariant.image && selectedVariant.image.trim()) {
+          itemImage = selectedVariant.image.trim();
+        }
+      }
+    }
+    
     return {
       id: product._id,
       name: product.name,
-      price: product.sale_price ?? product.price,
+      price: itemPrice,
       quantity: i.quantity,
       shippingFee: product.shippingFee ?? null,
       tax: product.tax !== undefined ? product.tax : null,
-      image: getProductImageUrl(product),
+      image: itemImage,
       slug: product.slug,
+      variantId: i.variantId || null,
+      variant: selectedVariant ? {
+        _id: selectedVariant._id,
+        storage: selectedVariant.storage || null,
+        ram: selectedVariant.ram || null,
+        color: selectedVariant.color || null,
+        bundle: selectedVariant.bundle || null,
+        warranty: selectedVariant.warranty || null,
+        price: selectedVariant.price || null,
+        stock: selectedVariant.stock || null,
+        sku: selectedVariant.sku || null,
+        image: selectedVariant.image || null,
+      } : null,
     };
   });
 
@@ -379,3 +612,4 @@ exports.getUserCart = catchAsync(async (req, res) => {
     "User cart fetched successfully"
   );
 });
+
