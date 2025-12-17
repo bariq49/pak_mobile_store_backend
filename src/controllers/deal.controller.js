@@ -7,6 +7,7 @@ const successResponse = require("../utils/successResponse");
 const errorResponse = require("../utils/errorResponse");
 const APIFeatures = require("../utils/apiFeatures");
 const { deleteFromCloudinary } = require("../../config/cloudinary");
+const { isDealActive } = require("../services/dealEvaluationService");
 
 // ---------------- CREATE DEAL ----------------
 exports.createDeal = catchAsync(async (req, res, next) => {
@@ -44,6 +45,7 @@ exports.createDeal = catchAsync(async (req, res, next) => {
     isActive = false,
     priority = 1,
     btnText,
+    dealVariant = "MAIN",
   } = dealData;
 
   // Ensure arrays are actually arrays
@@ -67,6 +69,15 @@ exports.createDeal = catchAsync(async (req, res, next) => {
   // Validate discountValue
   if (isNaN(discountValue) || discountValue < 0) {
     return errorResponse(res, "discountValue must be a positive number", 400);
+  }
+
+  // Validate dealVariant
+  if (dealVariant && !["MAIN", "FLASH", "SUPER", "MEGA"].includes(dealVariant)) {
+    return errorResponse(
+      res,
+      "Invalid dealVariant. Must be 'MAIN', 'FLASH', 'SUPER', or 'MEGA'",
+      400
+    );
   }
 
   // Validate dates
@@ -232,6 +243,7 @@ exports.createDeal = catchAsync(async (req, res, next) => {
       priority,
       image,
       btnText,
+      dealVariant: dealVariant || "MAIN",
       createdBy: req.user?._id,
     });
 
@@ -284,7 +296,10 @@ exports.getAllDeals = catchAsync(async (req, res) => {
       return { ...p, discountedPrice };
     });
 
-    formattedDeals.push({ ...deal, products: discountedProducts });
+    // Add computed status field: "active" if both isActive and time window are valid, otherwise "inactive"
+    const status = isDealActive(deal) ? "active" : "inactive";
+
+    formattedDeals.push({ ...deal, products: discountedProducts, status });
   }
 
   return successResponse(
@@ -303,7 +318,12 @@ exports.getDeal = catchAsync(async (req, res) => {
     .populate("products", "name slug price sale_price category subCategory");
 
   if (!deal) return errorResponse(res, "Deal not found", 404);
-  return successResponse(res, { deal }, "Deal fetched successfully");
+  
+  // Add computed status field: "active" if both isActive and time window are valid, otherwise "inactive"
+  const dealObj = deal.toObject();
+  const status = isDealActive(dealObj) ? "active" : "inactive";
+  
+  return successResponse(res, { deal: { ...dealObj, status } }, "Deal fetched successfully");
 });
 
 // ---------------- UPDATE DEAL ----------------
@@ -346,6 +366,7 @@ exports.updateDeal = catchAsync(async (req, res) => {
     isActive,
     priority,
     btnText,
+    dealVariant,
   } = dealData;
 
   // Validate required fields if provided
@@ -360,6 +381,13 @@ exports.updateDeal = catchAsync(async (req, res) => {
   }
   if (startDate && endDate && new Date(startDate) >= new Date(endDate)) {
     return errorResponse(res, "startDate must be before endDate", 400);
+  }
+  if (dealVariant !== undefined && !["MAIN", "FLASH", "SUPER", "MEGA"].includes(dealVariant)) {
+    return errorResponse(
+      res,
+      "Invalid dealVariant. Must be 'MAIN', 'FLASH', 'SUPER', or 'MEGA'",
+      400
+    );
   }
 
   // ✅ Validate Products if provided
@@ -481,6 +509,7 @@ exports.updateDeal = catchAsync(async (req, res) => {
   if (isActive !== undefined) updateData.isActive = isActive;
   if (priority !== undefined) updateData.priority = priority;
   if (btnText !== undefined) updateData.btnText = btnText;
+  if (dealVariant !== undefined) updateData.dealVariant = dealVariant;
   if (req.files?.desktop?.[0] || req.files?.mobile?.[0]) {
     updateData.image = imageUpdate;
   }

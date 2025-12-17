@@ -12,19 +12,28 @@ const {
 } = require("../../config/constants");
 const siteSettingModel = require("../models/siteSetting.model");
 
-const calculateCartTotals = async (cart, userId, userAddress = {}) => {
+// Helper function to calculate totals from items array (reusable for cart and buy-now)
+const calculateTotalsFromItems = async (
+  items,
+  coupon,
+  shippingMethod,
+  paymentMethod,
+  userId,
+  userAddress = {}
+) => {
   // Fetch products with all fields including tax
-  const productIds = cart.items.map((it) =>
+  const productIds = items.map((it) =>
     typeof it.product === "object" ? it.product._id : it.product
   );
   // Use lean() to get plain objects with all fields including tax
   const products = await Product.find({ _id: { $in: productIds } }).lean();
 
-  // Calculate subtotal + total weight
+  // Calculate subtotal + tax + total weight
   let subtotal = 0;
+  let taxTotal = 0;
   let totalWeight = 0;
 
-  for (const item of cart.items) {
+  for (const item of items) {
     // Preserve tax from originally populated product before replacing
     const originalTax = typeof item.product === "object" && item.product.tax !== undefined 
       ? item.product.tax 
@@ -62,7 +71,26 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
       }
     }
     
-    subtotal += price * item.quantity;
+    // Base line total (without tax)
+    const lineBaseTotal = price * item.quantity;
+    subtotal += lineBaseTotal;
+
+    // ---- TAX CALCULATION ----
+    // Treat tax as a percentage (e.g. 10 = 10%)
+    const rawTaxValue =
+      product.tax !== undefined && product.tax !== null
+        ? product.tax
+        : originalTax ?? 0;
+
+    const taxRate =
+      typeof rawTaxValue === "number" && isFinite(rawTaxValue) && rawTaxValue > 0
+        ? rawTaxValue
+        : 0;
+
+    if (taxRate > 0) {
+      const lineTax = (lineBaseTotal * taxRate) / 100;
+      taxTotal += lineTax;
+    }
 
     const weight = product.weight ?? 0;
     totalWeight += weight * item.quantity;
@@ -84,38 +112,36 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
   let discount = 0;
   let validCoupon = null;
 
-  if (cart.coupon) {
-    const coupon = await Coupon.findById(cart.coupon);
+  if (coupon) {
+    const couponDoc = typeof coupon === "object" && coupon._id 
+      ? coupon 
+      : await Coupon.findById(coupon);
     if (
-      coupon &&
-      coupon.isActive &&
-      (!coupon.expiryDate || coupon.expiryDate > new Date())
+      couponDoc &&
+      couponDoc.isActive &&
+      (!couponDoc.expiryDate || couponDoc.expiryDate > new Date())
     ) {
       const eligible =
-        subtotal >= (coupon.minCartValue || 0) &&
-        (!coupon.startDate || coupon.startDate <= new Date());
+        subtotal >= (couponDoc.minCartValue || 0) &&
+        (!couponDoc.startDate || couponDoc.startDate <= new Date());
 
       if (eligible) {
-        validCoupon = coupon;
-        if (coupon.discountType === "percentage") {
-          discount = (subtotal * coupon.discountValue) / 100;
-          if (coupon.maxDiscount)
-            discount = Math.min(discount, coupon.maxDiscount);
-        } else if (coupon.discountType === "fixed") {
-          discount = coupon.discountValue;
+        validCoupon = couponDoc;
+        if (couponDoc.discountType === "percentage") {
+          discount = (subtotal * couponDoc.discountValue) / 100;
+          if (couponDoc.maxDiscount)
+            discount = Math.min(discount, couponDoc.maxDiscount);
+        } else if (couponDoc.discountType === "fixed") {
+          discount = couponDoc.discountValue;
         }
-      } else {
-        cart.coupon = null;
       }
-    } else {
-      cart.coupon = null;
     }
   }
 
   discount = Math.min(discount, subtotal);
 
   // Shipping zone + weight rates
-  const pincode = cart.addressPincode || userAddress.pincode || "";
+  const pincode = userAddress.pincode || "";
   const pfx = pincode ? pincode.substring(0, 2) : null;
   let zone = null;
 
@@ -129,7 +155,7 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
   const baseRate = zone?.baseRate ?? DEFAULT_BASE_RATE;
   const regionMultiplier = zone?.regionMultiplier ?? DEFAULT_REGION_MULTIPLIER;
   const expressMultiplier =
-    cart.shippingMethod === "express"
+    shippingMethod === "express"
       ? zone?.expressMultiplier ?? EXPRESS_MULTIPLIER
       : 1.0;
   const freeShippingThreshold =
@@ -138,8 +164,15 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
 
   // Handling fee
   let baseHandling = 0;
-  for (const item of cart.items) {
-    baseHandling += (item.product.shippingFee ?? 0) * item.quantity;
+  for (const item of items) {
+    // item.product should have been replaced with plain object in the previous loop
+    // But check if it exists and is an object
+    if (item.product && typeof item.product === 'object' && item.product !== null) {
+      baseHandling += (item.product.shippingFee ?? 0) * item.quantity;
+    } else {
+      // If product wasn't found/replaced, skip this item (shouldn't happen, but safety check)
+      console.warn('Item product not found for shipping fee calculation:', item);
+    }
   }
 
   // Weight rate calc
@@ -162,7 +195,7 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
   // Class multiplier
   let classMultiplier = 1.0;
   if (SHIPPING_CLASS_SURCHARGES) {
-    const multipliers = cart.items.map((it) => {
+    const multipliers = items.map((it) => {
       const c = it.product?.shippingClass ?? "standard";
       return SHIPPING_CLASS_SURCHARGES[c] ?? 1.0;
     });
@@ -199,7 +232,7 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
   // COD fee logic (Dynamic from Site Settings)
   let codFee = 0;
 
-  if (cart.paymentMethod === "cod") {
+  if (paymentMethod === "cod") {
     try {
       const codFeeSetting = await siteSettingModel.findOne({ key: "COD_FEE" });
       codFee = codFeeSetting ? Number(codFeeSetting.value) || 0 : 0;
@@ -211,15 +244,47 @@ const calculateCartTotals = async (cart, userId, userAddress = {}) => {
     codFee = 0;
   }
 
-  // Final totals
-  cart.total = subtotal;
-  cart.discount = discount;
-  cart.shippingFee = shippingFee;
-  cart.codFee = codFee;
-  cart.finalTotal = Math.max(subtotal - discount + shippingFee + codFee, 0);
-  cart._computed = { totalWeight };
+  // Return calculated totals
+  return {
+    total: subtotal,
+    taxTotal,
+    discount,
+    shippingFee,
+    codFee,
+    finalTotal: Math.max(subtotal + taxTotal - discount + shippingFee + codFee, 0),
+    validCoupon,
+    _computed: { totalWeight },
+  };
+};
+
+// Main function for cart (backward compatible)
+const calculateCartTotals = async (cart, userId, userAddress = {}) => {
+  const totals = await calculateTotalsFromItems(
+    cart.items,
+    cart.coupon,
+    cart.shippingMethod,
+    cart.paymentMethod,
+    userId,
+    userAddress
+  );
+
+  // Update cart with calculated totals
+  cart.total = totals.total;
+  // Optional: expose total tax on cart document (not required by schema)
+  cart.taxTotal = totals.taxTotal;
+  cart.discount = totals.discount;
+  cart.shippingFee = totals.shippingFee;
+  cart.codFee = totals.codFee;
+  cart.finalTotal = totals.finalTotal;
+  cart._computed = totals._computed;
+
+  // Update coupon if it became invalid
+  if (!totals.validCoupon && cart.coupon) {
+    cart.coupon = null;
+  }
 
   return cart;
 };
 
 module.exports = calculateCartTotals;
+module.exports.calculateTotalsFromItems = calculateTotalsFromItems;

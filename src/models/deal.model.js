@@ -37,6 +37,14 @@ const dealSchema = new mongoose.Schema(
     isGlobal: { type: Boolean, default: false },
     isActive: { type: Boolean, default: false },
     priority: { type: Number, default: 1 },
+    
+    // Deal variant for frontend placement (does not affect pricing)
+    dealVariant: {
+      type: String,
+      enum: ["MAIN", "FLASH", "SUPER", "MEGA"],
+      required: true,
+      default: "MAIN",
+    },
 
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },

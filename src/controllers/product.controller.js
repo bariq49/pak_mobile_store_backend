@@ -5,6 +5,7 @@ const Attribute = require("../models/attribute.model");
 const Variation = require("../models/variation.model");
 const VariationOption = require("../models/variationOption.model");
 const Category = require("../models/category.model");
+const { applyDealsToProducts } = require("../services/dealEvaluationService");
 
 const catchAsync = require("../utils/catchAsync");
 const AppError = require("../utils/appError");
@@ -230,10 +231,13 @@ exports.getAllProducts = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedProducts);
+
   return successResponse(
     res,
     {
-      products: formattedProducts,
+      products: productsWithDeals,
       pagination: features.pagination,
     },
     "Products fetched successfully"
@@ -299,9 +303,29 @@ exports.getProduct = catchAsync(async (req, res, next) => {
   // Format additional_info
   productData.additional_info = formatAdditionalInfo(productData);
 
+  // Apply deals to product (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  let productWithDeal = { ...productData };
+  
+  try {
+    const productsWithDeals = await applyDealsToProducts([productData]);
+    if (productsWithDeals && productsWithDeals.length > 0) {
+      productWithDeal = productsWithDeals[0];
+    }
+  } catch (error) {
+    // If deal evaluation fails, log error but continue
+    console.error("Error applying deals to product:", error);
+  }
+  
+  // ALWAYS ensure pricing fields are present (guaranteed fallback)
+  const basePrice = productData.sale_price ?? productData.price ?? 0;
+  productWithDeal.originalPrice = productWithDeal.originalPrice ?? basePrice;
+  productWithDeal.dealPrice = productWithDeal.dealPrice ?? null;
+  productWithDeal.appliedDealId = productWithDeal.appliedDealId ?? null;
+  productWithDeal.appliedDealVariant = productWithDeal.appliedDealVariant ?? null;
+
   return successResponse(
     res,
-    { product: productData },
+    { product: productWithDeal },
     "Product fetched successfully"
   );
 });
@@ -1480,10 +1504,13 @@ exports.getProductsByCategory = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedProducts);
+
   return successResponse(
     res,
     {
-      products: formattedProducts,
+      products: productsWithDeals,
       pagination: features.pagination,
     },
     "Products fetched successfully by parent category"
@@ -1577,13 +1604,17 @@ exports.getProductsByCategorySubCategories = catchAsync(
     // Step 9: Format products with additional_info
     const formattedProducts = products.map((p) => ({
       ...p.toObject(),
+      variants: formatVariantsForResponse(p.toObject().variants),
       additional_info: formatAdditionalInfo(p.toObject()),
     }));
+
+    // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+    const productsWithDeals = await applyDealsToProducts(formattedProducts);
 
     return successResponse(
       res,
       {
-        products: formattedProducts,
+        products: productsWithDeals,
         pagination: features.pagination,
       },
       "Products fetched successfully by parent & child category"
@@ -1632,11 +1663,14 @@ exports.getSaleProducts = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedProducts);
+
   // Success response
   return successResponse(
     res,
     {
-      products: formattedProducts,
+      products: productsWithDeals,
       pagination: features.pagination,
     },
     "Deal products fetched successfully"
@@ -1690,11 +1724,14 @@ exports.getNewSellerProducts = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedProducts);
+
   // Success response
   return successResponse(
     res,
     {
-      products: formattedProducts,
+      products: productsWithDeals,
       pagination: features.pagination,
     },
     "New seller products fetched successfully"
@@ -1758,11 +1795,14 @@ exports.getBestSellerProducts = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedProducts);
+
   // Success response
   return successResponse(
     res,
     {
-      products: formattedProducts,
+      products: productsWithDeals,
       pagination: features.pagination,
     },
     "Best seller products fetched successfully"
@@ -1832,11 +1872,14 @@ exports.getRelatedProducts = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedProducts);
+
   // 8. Response
   return successResponse(
     res,
     {
-      products: formattedProducts,
+      products: productsWithDeals,
       pagination: features.pagination,
     },
     "Related products fetched successfully"
@@ -1912,9 +1955,12 @@ exports.getTopSalesProducts = catchAsync(async (req, res, next) => {
       };
     });
 
+    // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+    const productsWithDeals = await applyDealsToProducts(formattedTopRated);
+
     return successResponse(
       res,
-      { products: formattedTopRated },
+      { products: productsWithDeals },
       "No sales yet — showing top-rated products"
     );
   }
@@ -1929,9 +1975,12 @@ exports.getTopSalesProducts = catchAsync(async (req, res, next) => {
     };
   });
 
+  // Apply deals to products (adds originalPrice, dealPrice, appliedDealId, appliedDealVariant)
+  const productsWithDeals = await applyDealsToProducts(formattedTopSales);
+
   return successResponse(
     res,
-    { products: formattedTopSales },
+    { products: productsWithDeals },
     "Top 10 best-selling products fetched successfully"
   );
 });

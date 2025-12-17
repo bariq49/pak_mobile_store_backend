@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const Order = require("../models/order.model");
 const User = require("../models/user.model");
 const Cart = require("../models/cart.model");
+const BuyNow = require("../models/buyNow.model");
 const Product = require("../models/product.model");
 const catchAsync = require("../utils/catchAsync");
 const successResponse = require("../utils/successResponse");
@@ -22,7 +23,15 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
   const features = new APIFeatures(
     Order.find()
       .populate("user", "name email")
-      .populate("items.product", "name slug image"),
+      // Populate product with image URL-friendly fields (similar to cart)
+      .populate({
+        path: "items.product",
+        select: "name slug image mainImage tax",
+        populate: {
+          path: "image",
+          select: "original thumbnail",
+        },
+      }),
     req.query
   );
 
@@ -36,16 +45,44 @@ exports.getAllOrders = catchAsync(async (req, res, next) => {
   );
 });
 
-// Create Order
-exports.createOrder = catchAsync(async (req, res) => {
-  const userId = req.user._id;
-  const { addressId, paymentMethod = "cod", metadata = {} } = req.body;
+// Helper function to find variant by ID (reused from cart controller logic)
+const findVariantById = (variants, variantId) => {
+  if (!variants || !Array.isArray(variants) || !variantId) return null;
+  const variantIdStr = String(variantId).trim();
+  let variant = variants.find((v) => v._id && v._id.toString() === variantIdStr);
+  if (variant) return variant;
+  if (variantIdStr.includes('.')) {
+    const objectIdPart = variantIdStr.split('.')[0];
+    variant = variants.find((v) => v._id && v._id.toString() === objectIdPart);
+    if (variant) return variant;
+  }
+  const index = parseInt(variantIdStr, 10);
+  if (!isNaN(index) && index >= 0 && index < variants.length) {
+    return variants[index];
+  }
+  return null;
+};
 
+// Helper function to create order from items (reusable for cart and buy-now)
+const createOrderFromItems = async (
+  items,
+  userId,
+  addressId,
+  paymentMethod,
+  couponId,
+  subtotal,
+  shippingFee,
+  discount,
+  codFee,
+  finalTotal,
+  metadata,
+  session
+) => {
   // Fetch user and address
-  const user = await User.findById(userId).populate("addresses");
-  if (!user) return errorResponse(res, "User not found", 404);
+  const user = await User.findById(userId).populate("addresses").session(session);
+  if (!user) throw new Error("User not found");
   const shippingAddress = user.addresses.id(addressId);
-  if (!shippingAddress) return errorResponse(res, "Address not found", 400);
+  if (!shippingAddress) throw new Error("Address not found");
 
   // Snapshot of shipping address
   const shippingSnapshot = {
@@ -61,23 +98,36 @@ exports.createOrder = catchAsync(async (req, res) => {
     label: shippingAddress.label,
   };
 
-  // Fetch cart
-  let cart = await Cart.findOne({ user: userId })
-    .populate("items.product")
-    .populate("coupon");
-  if (!cart || cart.items.length === 0)
-    return errorResponse(res, "Cart is empty", 400);
-  cart = await calculateCartTotals(cart, userId);
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    for (const item of cart.items) {
-      const product = await Product.findById(item.product._id).session(session);
-      if (!product) throw new Error(`Product ${item.product._id} not found`);
-      if (!product.in_stock || product.quantity < item.quantity)
+  // Validate stock and update products
+  for (const item of items) {
+    const product = await Product.findById(item.product._id).session(session);
+    if (!product) throw new Error(`Product ${item.product._id} not found`);
+    
+    // Check variant stock if variant exists
+    if (item.variantId && product.variants && Array.isArray(product.variants)) {
+      const variant = findVariantById(product.variants, item.variantId);
+      if (!variant) throw new Error(`Variant not found for product ${product.name}`);
+      if (variant.stock === undefined || variant.stock === null || variant.stock < item.quantity) {
+        throw new Error(`Insufficient variant stock for product ${product.name}`);
+      }
+      // Update variant stock - find the variant in the product's variants array and update it
+      const variantIdStr = String(item.variantId).trim();
+      const objectIdPart = variantIdStr.includes('.') ? variantIdStr.split('.')[0] : variantIdStr;
+      const variantIndex = product.variants.findIndex(
+        (v) => v._id && v._id.toString() === objectIdPart
+      );
+      if (variantIndex !== -1) {
+        product.variants[variantIndex].stock -= item.quantity;
+        product.salesCount = (product.salesCount || 0) + item.quantity;
+        await product.save({ session });
+      } else {
+        throw new Error(`Variant not found in product ${product.name}`);
+      }
+    } else {
+      // Check product stock for simple products
+      if (!product.in_stock || product.quantity < item.quantity) {
         throw new Error(`Insufficient stock for product ${product.name}`);
-
+      }
       if (product.product_type === "simple") {
         product.quantity -= item.quantity;
         product.salesCount = (product.salesCount || 0) + item.quantity;
@@ -85,109 +135,245 @@ exports.createOrder = catchAsync(async (req, res) => {
         await product.save({ session });
       }
     }
+  }
 
-    const orderItems = cart.items.map((item) => ({
+  // Prepare order items with variant prices
+  const orderItems = await Promise.all(items.map(async (item) => {
+    const product = await Product.findById(item.product._id).session(session);
+    let price = product.sale_price ?? product.price ?? 0;
+    
+    // Use variant price if variant exists
+    if (item.variantId && product.variants && Array.isArray(product.variants)) {
+      const variant = findVariantById(product.variants, item.variantId);
+      if (variant && variant.price !== undefined && variant.price !== null) {
+        price = variant.price;
+      }
+    }
+    
+    return {
       product: item.product._id,
-      name: item.product.name,
-      price: item.product.sale_price ?? item.product.price,
+      name: product.name,
+      price,
       quantity: item.quantity,
-      image: item.product.image || null,
-      shippingFee: item.product.shippingFee ?? 0,
-    }));
-    const orderData = {
-      user: userId,
-      items: orderItems,
-      shippingAddress: shippingSnapshot,
-      paymentMethod,
-      subtotal: cart.total,
-      shippingFee: cart.shippingFee,
-      discount: cart.discount,
-      codFee: cart.codFee,
-      coupon: cart.coupon?._id || null,
-      totalAmount: cart.finalTotal,
-      metadata,
-      paymentStatus: paymentMethod === "cod" ? "unpaid" : "pending",
-      orderStatus: paymentMethod === "cod" ? "pending" : "processing",
+      image: product.image || null,
+      shippingFee: product.shippingFee ?? 0,
     };
+  }));
 
-    let clientSecret = null;
+  const orderData = {
+    user: userId,
+    items: orderItems,
+    shippingAddress: shippingSnapshot,
+    paymentMethod,
+    subtotal,
+    shippingFee,
+    discount,
+    codFee,
+    coupon: couponId || null,
+    totalAmount: finalTotal,
+    metadata,
+    paymentStatus: paymentMethod === "cod" ? "unpaid" : "pending",
+    orderStatus: paymentMethod === "cod" ? "pending" : "processing",
+  };
 
-    // Stripe payment
-    if (paymentMethod === "stripe") {
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(cart.finalTotal * 100),
-        currency: "sar",
-        payment_method_types: ["card"],
-        shipping: {
-          name: shippingSnapshot.fullName,
-          phone: shippingSnapshot.phoneNumber,
-          address: {
-            line1: shippingSnapshot.streetAddress,
-            line2: shippingSnapshot.apartment || "",
-            city: shippingSnapshot.city,
-            state: shippingSnapshot.state || "",
-            country: shippingSnapshot.country,
-            postal_code: shippingSnapshot.postalCode,
-          },
-        },
-        metadata: {
-          userId: userId.toString(),
-          orderType: "product-order",
-          ...metadata,
-        },
-      });
+  let clientSecret = null;
 
-      orderData.paymentIntentId = paymentIntent.id;
-      clientSecret = paymentIntent.client_secret;
-    }
-
-    // Create order
-    const [order] = await Order.create([orderData], { session });
-
-    // Redeem coupon if applied
-    if (cart.coupon) await redeemCoupon(cart.coupon._id, userId);
-
-    // Clear cart
-    cart.items = [];
-    cart.coupon = null;
-    cart.discount = 0;
-    cart.total = 0;
-    cart.finalTotal = 0;
-    cart.codFee = 0;
-    await cart.save({ session });
-
-    await session.commitTransaction();
-    session.endSession();
-
-    // Send confirmation email
-    try {
-      await sendEmail({
-        email: user.email,
-        subject: `Order Confirmation - ${order.orderNumber || order._id}`,
-        html: orderConfirmationEmail({
-          fullName: shippingSnapshot.fullName,
-          orderNumber: order.orderNumber || order._id,
-          trackingNumber: order.trackingNumber || "Not Assigned Yet",
-          totalAmount: order.totalAmount.toFixed(2),
-          paymentMethod: order.paymentMethod,
-          orderStatus: order.orderStatus,
-          streetAddress: shippingSnapshot.streetAddress,
+  // Stripe payment
+  if (paymentMethod === "stripe") {
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(finalTotal * 100),
+      currency: "sar",
+      payment_method_types: ["card"],
+      shipping: {
+        name: shippingSnapshot.fullName,
+        phone: shippingSnapshot.phoneNumber,
+        address: {
+          line1: shippingSnapshot.streetAddress,
+          line2: shippingSnapshot.apartment || "",
           city: shippingSnapshot.city,
+          state: shippingSnapshot.state || "",
           country: shippingSnapshot.country,
-        }),
-      });
-    } catch (emailErr) {
-      console.error("Order confirmation email failed:", emailErr);
-    }
+          postal_code: shippingSnapshot.postalCode,
+        },
+      },
+      metadata: {
+        userId: userId.toString(),
+        orderType: "product-order",
+        ...metadata,
+      },
+    });
 
-    return successResponse(
-      res,
-      { order, clientSecret: paymentMethod === "stripe" ? clientSecret : null },
-      paymentMethod === "cod"
-        ? "COD order created successfully"
-        : "Stripe order created successfully",
-      201
-    );
+    orderData.paymentIntentId = paymentIntent.id;
+    clientSecret = paymentIntent.client_secret;
+  }
+
+  // Create order
+  const [order] = await Order.create([orderData], { session });
+
+  // Redeem coupon if applied
+  if (couponId) await redeemCoupon(couponId, userId);
+
+  // Send confirmation email
+  try {
+    await sendEmail({
+      email: user.email,
+      subject: `Order Confirmation - ${order.orderNumber || order._id}`,
+      html: orderConfirmationEmail({
+        fullName: shippingSnapshot.fullName,
+        orderNumber: order.orderNumber || order._id,
+        trackingNumber: order.trackingNumber || "Not Assigned Yet",
+        totalAmount: order.totalAmount.toFixed(2),
+        paymentMethod: order.paymentMethod,
+        orderStatus: order.orderStatus,
+        streetAddress: shippingSnapshot.streetAddress,
+        city: shippingSnapshot.city,
+        country: shippingSnapshot.country,
+      }),
+    });
+  } catch (emailErr) {
+    console.error("Order confirmation email failed:", emailErr);
+  }
+
+  return { order, clientSecret, user };
+};
+
+// Create Order
+exports.createOrder = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+  const { addressId, paymentMethod = "cod", metadata = {}, isBuyNow = false } = req.body;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    let items = [];
+    let couponId = null;
+    let subtotal = 0;
+    let shippingFee = 0;
+    let discount = 0;
+    let codFee = 0;
+    let finalTotal = 0;
+
+    if (isBuyNow) {
+      // Fetch buy-now item
+      let buyNow = await BuyNow.findOne({ user: userId })
+        .populate("item.product")
+        .populate("coupon")
+        .session(session);
+      
+      if (!buyNow || !buyNow.item) {
+        throw new Error("Buy Now item not found");
+      }
+
+      // Calculate totals
+      const { calculateTotalsFromItems } = require("../utils/calculateCartTotals");
+      const totals = await calculateTotalsFromItems(
+        [buyNow.item],
+        buyNow.coupon,
+        buyNow.shippingMethod,
+        buyNow.paymentMethod || paymentMethod,
+        userId
+      );
+
+      items = [buyNow.item];
+      couponId = buyNow.coupon?._id || null;
+      subtotal = totals.total;
+      shippingFee = totals.shippingFee;
+      discount = totals.discount;
+      codFee = totals.codFee;
+      finalTotal = totals.finalTotal;
+
+      // Use buy-now payment method if set, otherwise use request payment method
+      const finalPaymentMethod = buyNow.paymentMethod || paymentMethod;
+
+      // Create order
+      const { order, clientSecret, user } = await createOrderFromItems(
+        items,
+        userId,
+        addressId,
+        finalPaymentMethod,
+        couponId,
+        subtotal,
+        shippingFee,
+        discount,
+        codFee,
+        finalTotal,
+        metadata,
+        session
+      );
+
+      // Clear buy-now item
+      await BuyNow.findOneAndDelete({ user: userId }).session(session);
+
+      await session.commitTransaction();
+      session.endSession();
+
+      return successResponse(
+        res,
+        { order, clientSecret: finalPaymentMethod === "stripe" ? clientSecret : null },
+        finalPaymentMethod === "cod"
+          ? "COD order created successfully"
+          : "Stripe order created successfully",
+        201
+      );
+    } else {
+      // Original cart-based flow
+      let cart = await Cart.findOne({ user: userId })
+        .populate("items.product")
+        .populate("coupon")
+        .session(session);
+      
+      if (!cart || cart.items.length === 0) {
+        throw new Error("Cart is empty");
+      }
+      
+      cart = await calculateCartTotals(cart, userId);
+
+      items = cart.items;
+      couponId = cart.coupon?._id || null;
+      subtotal = cart.total;
+      shippingFee = cart.shippingFee;
+      discount = cart.discount;
+      codFee = cart.codFee;
+      finalTotal = cart.finalTotal;
+
+      // Create order
+      const { order, clientSecret, user } = await createOrderFromItems(
+        items,
+        userId,
+        addressId,
+        paymentMethod,
+        couponId,
+        subtotal,
+        shippingFee,
+        discount,
+        codFee,
+        finalTotal,
+        metadata,
+        session
+      );
+
+      // Clear cart
+      cart.items = [];
+      cart.coupon = null;
+      cart.discount = 0;
+      cart.total = 0;
+      cart.finalTotal = 0;
+      cart.codFee = 0;
+      await cart.save({ session });
+
+      await session.commitTransaction();
+      session.endSession();
+
+      return successResponse(
+        res,
+        { order, clientSecret: paymentMethod === "stripe" ? clientSecret : null },
+        paymentMethod === "cod"
+          ? "COD order created successfully"
+          : "Stripe order created successfully",
+        201
+      );
+    }
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -202,7 +388,15 @@ exports.getOrders = catchAsync(async (req, res, next) => {
 
   const total = await Order.countDocuments({ user: userId });
   const features = new APIFeatures(
-    Order.find({ user: userId }).populate("items.product", "name slug image"),
+    Order.find({ user: userId }).populate({
+      path: "items.product",
+      // Include image URL-related fields and tax
+      select: "name slug image mainImage tax",
+      populate: {
+        path: "image",
+        select: "original thumbnail",
+      },
+    }),
     req.query
   );
 
@@ -219,7 +413,14 @@ exports.getOrders = catchAsync(async (req, res, next) => {
 //  Get single order (ensure owner or admin)
 exports.getOrder = catchAsync(async (req, res, next) => {
   const order = await Order.findById(req.params.id)
-    .populate("items.product", "name slug image")
+    .populate({
+      path: "items.product",
+      select: "name slug image mainImage tax",
+      populate: {
+        path: "image",
+        select: "original thumbnail",
+      },
+    })
     .populate(
       "coupon",
       "code discountType discountValue minCartValue maxDiscount"
@@ -316,7 +517,14 @@ exports.trackOrder = catchAsync(async (req, res, next) => {
 
   const order = await Order.findOne({ trackingNumber })
     .populate("user", "name email")
-    .populate("items.product", "name slug image");
+    .populate({
+      path: "items.product",
+      select: "name slug image mainImage tax",
+      populate: {
+        path: "image",
+        select: "original thumbnail",
+      },
+    });
 
   if (!order) return errorResponse(res, "Invalid tracking number", 404);
 
