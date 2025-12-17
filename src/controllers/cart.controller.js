@@ -228,7 +228,7 @@ exports.addToCart = catchAsync(async (req, res) => {
     
     // For simple products, check quantity
     if (product.quantity < quantity) {
-      return errorResponse(res, "Insufficient stock", 400);
+    return errorResponse(res, "Insufficient stock", 400);
     }
   }
 
@@ -335,7 +335,7 @@ exports.updateCartItem = catchAsync(async (req, res) => {
     } else {
       // Check product stock for simple products
       if (!product.in_stock || product.quantity < quantity) {
-        return errorResponse(res, "Insufficient stock", 400);
+      return errorResponse(res, "Insufficient stock", 400);
       }
     }
     
