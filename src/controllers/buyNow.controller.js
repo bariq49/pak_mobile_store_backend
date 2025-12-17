@@ -4,6 +4,7 @@ const catchAsync = require("../utils/catchAsync");
 const successResponse = require("../utils/successResponse");
 const errorResponse = require("../utils/errorResponse");
 const { calculateTotalsFromItems } = require("../utils/calculateCartTotals");
+const { applyDealsToProducts } = require("../services/dealEvaluationService");
 
 /**
  * Find variant by ID, handling different ID formats
@@ -199,16 +200,44 @@ exports.setBuyNowItem = catchAsync(async (req, res) => {
   if (!buyNowProduct || !buyNowProduct.name) {
     return errorResponse(res, "Failed to load product details", 500);
   }
+  
+  // Convert to plain object if it's a Mongoose document
+  let productObj = buyNowProduct;
+  if (buyNowProduct.toObject) {
+    productObj = buyNowProduct.toObject();
+  }
+  
+  // Always apply deals to ensure we have the latest deal pricing
+  const productsWithDeals = await applyDealsToProducts([productObj]);
+  if (productsWithDeals && productsWithDeals.length > 0) {
+    productObj = productsWithDeals[0];
+  }
+  
+  // Get deal pricing from product (now guaranteed to have deal pricing fields)
+  const originalPrice = productObj.originalPrice ?? (productObj.sale_price ?? productObj.price ?? 0);
+  const dealPrice = productObj.dealPrice ?? null;
+  const appliedDealId = productObj.appliedDealId ?? null;
+  const appliedDealVariant = productObj.appliedDealVariant ?? null;
+  
   let buyNowSelectedVariant = null;
-  let itemPrice = buyNowProduct.sale_price ?? buyNowProduct.price;
-  let itemImage = getProductImageUrl(buyNowProduct);
+  // Use deal price if available, otherwise use original price
+  let itemPrice = dealPrice !== null ? dealPrice : originalPrice;
+  let itemImage = getProductImageUrl(productObj);
 
-  if (buyNow.item.variantId && buyNowProduct.variants && Array.isArray(buyNowProduct.variants)) {
-    buyNowSelectedVariant = findVariantById(buyNowProduct.variants, buyNow.item.variantId);
+  if (buyNow.item.variantId && productObj.variants && Array.isArray(productObj.variants)) {
+    buyNowSelectedVariant = findVariantById(productObj.variants, buyNow.item.variantId);
     
     if (buyNowSelectedVariant) {
+      // For variants, apply deal discount if deal exists
       if (buyNowSelectedVariant.price !== undefined && buyNowSelectedVariant.price !== null) {
-        itemPrice = buyNowSelectedVariant.price;
+        if (dealPrice !== null && originalPrice > 0) {
+          // Calculate discount percentage from deal
+          const discountPercent = ((originalPrice - dealPrice) / originalPrice) * 100;
+          // Apply same discount to variant price
+          itemPrice = buyNowSelectedVariant.price - (buyNowSelectedVariant.price * discountPercent / 100);
+        } else {
+          itemPrice = buyNowSelectedVariant.price;
+        }
       }
       if (buyNowSelectedVariant.image && buyNowSelectedVariant.image.trim()) {
         itemImage = buyNowSelectedVariant.image.trim();
@@ -218,14 +247,18 @@ exports.setBuyNowItem = catchAsync(async (req, res) => {
 
   // Format item to match cart items structure exactly
   const formattedItem = {
-    id: buyNowProduct._id,
-    name: buyNowProduct.name,
+    id: productObj._id,
+    name: productObj.name,
     price: itemPrice,
+    originalPrice: originalPrice,
+    dealPrice: dealPrice,
+    appliedDealId: appliedDealId,
+    appliedDealVariant: appliedDealVariant,
     quantity: buyNow.item.quantity,
-    shippingFee: buyNowProduct.shippingFee ?? null,
-    tax: buyNowProduct.tax !== undefined ? buyNowProduct.tax : null,
+    shippingFee: productObj.shippingFee ?? null,
+    tax: productObj.tax !== undefined ? productObj.tax : null,
     image: itemImage,
-    slug: buyNowProduct.slug,
+    slug: productObj.slug,
     variantId: buyNow.item.variantId || null,
     variant: buyNowSelectedVariant ? {
       _id: buyNowSelectedVariant._id,
@@ -304,20 +337,72 @@ exports.getBuyNowItem = catchAsync(async (req, res) => {
     });
   }
 
+  // Calculate totals (this will apply deals and set deal pricing fields on buyNow.item.product)
   buyNow = await calculateBuyNowTotals(buyNow, req.user._id);
+  
+  // After calculateBuyNowTotals, always re-populate product to ensure we have all fields
+  // The product might have been set to a plain object which doesn't persist correctly
+  await buyNow.populate({
+    path: 'item.product',
+    select: 'name slug price sale_price image mainImage in_stock quantity shippingFee tax variants weight shippingClass',
+    populate: {
+      path: 'image',
+      select: 'original thumbnail',
+    },
+  });
+  
+  // Get product ID for fetching
+  const productId = buyNow.item.product?._id || buyNow.item.product;
+  if (!productId) {
+    return errorResponse(res, "Product not found in buy-now item", 404);
+  }
+  
+  // Fetch product fresh and apply deals
+  const fetchedProduct = await Product.findById(productId)
+    .select('name slug price sale_price image mainImage in_stock quantity shippingFee tax variants weight shippingClass')
+    .populate('image', 'original thumbnail')
+    .lean();
+  
+  if (!fetchedProduct) {
+    return errorResponse(res, "Product not found", 404);
+  }
+  
+  // Apply deals to get deal pricing
+  const productsWithDeals = await applyDealsToProducts([fetchedProduct]);
+  const product = productsWithDeals && productsWithDeals.length > 0 ? productsWithDeals[0] : {
+    ...fetchedProduct,
+    originalPrice: fetchedProduct.sale_price ?? fetchedProduct.price ?? 0,
+    dealPrice: null,
+    appliedDealId: null,
+    appliedDealVariant: null,
+  };
 
   // Format response
-  const product = buyNow.item.product;
+  // Get deal pricing from product (now guaranteed to have deal pricing fields)
+  const originalPrice = product.originalPrice ?? (product.sale_price ?? product.price ?? 0);
+  const dealPrice = product.dealPrice ?? null;
+  const appliedDealId = product.appliedDealId ?? null;
+  const appliedDealVariant = product.appliedDealVariant ?? null;
+  
   let selectedVariant = null;
-  let itemPrice = product.sale_price ?? product.price;
+  // Use deal price if available, otherwise use original price
+  let itemPrice = dealPrice !== null ? dealPrice : originalPrice;
   let itemImage = getProductImageUrl(product);
 
   if (buyNow.item.variantId && product.variants && Array.isArray(product.variants)) {
     selectedVariant = findVariantById(product.variants, buyNow.item.variantId);
     
     if (selectedVariant) {
+      // For variants, apply deal discount if deal exists
       if (selectedVariant.price !== undefined && selectedVariant.price !== null) {
-        itemPrice = selectedVariant.price;
+        if (dealPrice !== null && originalPrice > 0) {
+          // Calculate discount percentage from deal
+          const discountPercent = ((originalPrice - dealPrice) / originalPrice) * 100;
+          // Apply same discount to variant price
+          itemPrice = selectedVariant.price - (selectedVariant.price * discountPercent / 100);
+        } else {
+          itemPrice = selectedVariant.price;
+        }
       }
       if (selectedVariant.image && selectedVariant.image.trim()) {
         itemImage = selectedVariant.image.trim();
@@ -330,6 +415,10 @@ exports.getBuyNowItem = catchAsync(async (req, res) => {
     id: product._id,
     name: product.name,
     price: itemPrice,
+    originalPrice: originalPrice,
+    dealPrice: dealPrice,
+    appliedDealId: appliedDealId,
+    appliedDealVariant: appliedDealVariant,
     quantity: buyNow.item.quantity,
     shippingFee: product.shippingFee ?? null,
     tax: product.tax !== undefined ? product.tax : null,
@@ -433,20 +522,37 @@ const calculateBuyNowTotals = async (buyNow, userId) => {
   buyNow.codFee = totals.codFee;
   buyNow.finalTotal = totals.finalTotal;
 
-  // Restore original populated product (calculateTotalsFromItems replaced it with plain object)
-  // Only restore if originalProduct exists and has name (is populated)
-  if (originalProduct && (originalProduct.name || (originalProduct._id && typeof originalProduct._id !== 'string'))) {
-    buyNow.item.product = originalProduct;
+  // IMPORTANT: Do NOT modify buyNow.item.product here
+  // The product field must remain as an ObjectId reference for the schema to work
+  // Deal pricing is calculated and used in responses, but not stored in the database
+  // The product reference should remain unchanged (as ObjectId)
+  
+  // Ensure product is still an ObjectId reference (not a plain object)
+  // calculateTotalsFromItems might have replaced item.product with a plain object
+  // We need to restore it to just the ObjectId before saving
+  if (items[0] && items[0].product) {
+    // Get the product ID from the calculated item
+    const calculatedProduct = items[0].product;
+    const productId = calculatedProduct._id || originalProduct._id || originalProduct;
+    
+    // Restore product to ObjectId reference only (not the full object)
+    if (typeof productId === 'object' && productId._id) {
+      buyNow.item.product = productId._id;
+    } else if (typeof productId === 'object' && productId.toString) {
+      buyNow.item.product = productId.toString();
+    } else {
+      buyNow.item.product = productId;
+    }
   } else {
-    // If product was lost, re-populate it
-    await buyNow.populate({
-      path: 'item.product',
-      select: 'name slug price sale_price image mainImage in_stock quantity shippingFee tax variants weight shippingClass',
-      populate: {
-        path: 'image',
-        select: 'original thumbnail',
-      },
-    });
+    // Fallback: ensure product is ObjectId
+    const productId = originalProduct._id || originalProduct;
+    if (typeof productId === 'object' && productId._id) {
+      buyNow.item.product = productId._id;
+    } else if (typeof productId === 'object' && productId.toString) {
+      buyNow.item.product = productId.toString();
+    } else {
+      buyNow.item.product = productId;
+    }
   }
 
   if (!totals.validCoupon && buyNow.coupon) {

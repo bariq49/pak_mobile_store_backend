@@ -15,6 +15,7 @@ const APIFeatures = require("../utils/apiFeatures");
 const orderConfirmationEmail = require("../templates/emails/orderConfirmationEmail");
 const sendEmail = require("../utils/email");
 const calculateCartTotals = require("../utils/calculateCartTotals");
+const { applyDealsToProducts } = require("../services/dealEvaluationService");
 
 // get All products
 exports.getAllOrders = catchAsync(async (req, res, next) => {
@@ -137,16 +138,31 @@ const createOrderFromItems = async (
     }
   }
 
-  // Prepare order items with variant prices
+  // Prepare order items with variant prices and deal prices
+  // Note: items already have deal pricing applied from calculateTotalsFromItems
   const orderItems = await Promise.all(items.map(async (item) => {
     const product = await Product.findById(item.product._id).session(session);
-    let price = product.sale_price ?? product.price ?? 0;
     
-    // Use variant price if variant exists
+    // Get deal pricing from item.product (set by calculateTotalsFromItems)
+    const originalPrice = item.product.originalPrice ?? (product.sale_price ?? product.price ?? 0);
+    const dealPrice = item.product.dealPrice ?? null;
+    const appliedDealId = item.product.appliedDealId ?? null;
+    const appliedDealVariant = item.product.appliedDealVariant ?? null;
+    
+    // Use deal price if available, otherwise use original price
+    let price = dealPrice !== null ? dealPrice : originalPrice;
+    
+    // Use variant price if variant exists, applying deal discount if applicable
     if (item.variantId && product.variants && Array.isArray(product.variants)) {
       const variant = findVariantById(product.variants, item.variantId);
       if (variant && variant.price !== undefined && variant.price !== null) {
-        price = variant.price;
+        // Apply deal discount to variant price if deal exists
+        if (dealPrice !== null && originalPrice > 0) {
+          const discountPercent = ((originalPrice - dealPrice) / originalPrice) * 100;
+          price = variant.price - (variant.price * discountPercent / 100);
+        } else {
+          price = variant.price;
+        }
       }
     }
     
@@ -154,6 +170,10 @@ const createOrderFromItems = async (
       product: item.product._id,
       name: product.name,
       price,
+      originalPrice: originalPrice,
+      dealPrice: dealPrice,
+      appliedDealId: appliedDealId,
+      appliedDealVariant: appliedDealVariant,
       quantity: item.quantity,
       image: product.image || null,
       shippingFee: product.shippingFee ?? 0,

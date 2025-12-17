@@ -2,6 +2,7 @@ const Product = require("../models/product.model");
 const Coupon = require("../models/coupon.model");
 const ShippingZone = require("../models/shippingZone.model");
 const SiteSetting = require("../models/siteSetting.model");
+const { applyDealsToProducts } = require("../services/dealEvaluationService");
 
 const {
   EXPRESS_MULTIPLIER,
@@ -28,6 +29,9 @@ const calculateTotalsFromItems = async (
   // Use lean() to get plain objects with all fields including tax
   const products = await Product.find({ _id: { $in: productIds } }).lean();
 
+  // Apply deals to products to get deal prices
+  const productsWithDeals = await applyDealsToProducts(products);
+
   // Calculate subtotal + tax + total weight
   let subtotal = 0;
   let taxTotal = 0;
@@ -39,7 +43,7 @@ const calculateTotalsFromItems = async (
       ? item.product.tax 
       : undefined;
     
-    const product = products.find(
+    const product = productsWithDeals.find(
       (p) =>
         p._id.toString() ===
         (typeof item.product === "object"
@@ -48,10 +52,18 @@ const calculateTotalsFromItems = async (
     );
     if (!product) continue;
 
-    // Use variant price if variantId is present, otherwise use product price
-    let price = product.sale_price ?? product.price ?? 0;
+    // Use deal price if available, otherwise use originalPrice (which equals sale_price or price)
+    // originalPrice is always set by applyDealsToProducts
+    let basePrice = product.dealPrice !== null && product.dealPrice !== undefined 
+      ? product.dealPrice 
+      : (product.originalPrice ?? product.sale_price ?? product.price ?? 0);
+
+    // Use variant price if variantId is present, otherwise use the base price (deal or original)
+    let price = basePrice;
     
     // Check if this item has a variant and use variant price
+    // Note: Variants don't have deals applied to them individually, so we use variant price directly
+    // If variant price exists, use it; otherwise use the deal price (or original price)
     if (item.variantId && product.variants && Array.isArray(product.variants)) {
       // Helper to find variant by ID, handling different formats
       const variantIdStr = String(item.variantId).trim();
@@ -67,7 +79,15 @@ const calculateTotalsFromItems = async (
         );
       }
       if (variant && variant.price !== undefined && variant.price !== null) {
-        price = variant.price;
+        // For variants, apply deal discount to variant price if deal exists
+        if (product.dealPrice !== null && product.dealPrice !== undefined && product.originalPrice) {
+          // Calculate discount percentage from deal
+          const discountPercent = ((product.originalPrice - product.dealPrice) / product.originalPrice) * 100;
+          // Apply same discount to variant price
+          price = variant.price - (variant.price * discountPercent / 100);
+        } else {
+          price = variant.price;
+        }
       }
     }
     
@@ -101,10 +121,15 @@ const calculateTotalsFromItems = async (
       ? product.tax 
       : (originalTax !== undefined ? originalTax : null);
     
-    // Ensure tax is explicitly set on the product object
+    // Ensure tax and deal pricing fields are explicitly set on the product object
     item.product = {
       ...product,
-      tax: taxValue
+      tax: taxValue,
+      // Include deal pricing information for frontend display
+      originalPrice: product.originalPrice ?? (product.sale_price ?? product.price ?? 0),
+      dealPrice: product.dealPrice ?? null,
+      appliedDealId: product.appliedDealId ?? null,
+      appliedDealVariant: product.appliedDealVariant ?? null,
     };
   }
 
