@@ -257,15 +257,35 @@ const createOrderFromItems = async (
   return { order, clientSecret, user };
 };
 
+// Helper function to retry transaction on write conflict
+const retryTransaction = async (operation, maxRetries = 3) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      // Check if it's a write conflict error
+      if (error.code === 112 && error.codeName === "WriteConflict" && attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
+        console.warn(`⚠️  Write conflict detected (attempt ${attempt}/${maxRetries}). Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error; // Re-throw if not a write conflict or max retries reached
+    }
+  }
+};
+
 // Create Order
 exports.createOrder = catchAsync(async (req, res) => {
   const userId = req.user._id;
   const { addressId, paymentMethod = "cod", metadata = {}, isBuyNow = false } = req.body;
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  // Wrap the entire transaction in retry logic
+  const result = await retryTransaction(async () => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-  try {
+    try {
     let items = [];
     let couponId = null;
     let subtotal = 0;
@@ -328,14 +348,13 @@ exports.createOrder = catchAsync(async (req, res) => {
       await session.commitTransaction();
       session.endSession();
 
-      return successResponse(
-        res,
-        { order, clientSecret: finalPaymentMethod === "stripe" ? clientSecret : null },
-        finalPaymentMethod === "cod"
+      return {
+        order,
+        clientSecret: finalPaymentMethod === "stripe" ? clientSecret : null,
+        message: finalPaymentMethod === "cod"
           ? "COD order created successfully"
           : "Stripe order created successfully",
-        201
-      );
+      };
     } else {
       // Original cart-based flow
       let cart = await Cart.findOne({ user: userId })
@@ -385,21 +404,28 @@ exports.createOrder = catchAsync(async (req, res) => {
       await session.commitTransaction();
       session.endSession();
 
-      return successResponse(
-        res,
-        { order, clientSecret: paymentMethod === "stripe" ? clientSecret : null },
-        paymentMethod === "cod"
+      return {
+        order,
+        clientSecret: paymentMethod === "stripe" ? clientSecret : null,
+        message: paymentMethod === "cod"
           ? "COD order created successfully"
           : "Stripe order created successfully",
-        201
-      );
+      };
     }
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error("createOrder error:", err);
-    return errorResponse(res, err.message || "Order creation failed", 400);
-  }
+    } catch (err) {
+      await session.abortTransaction();
+      session.endSession();
+      throw err; // Re-throw to be caught by retry logic
+    }
+  });
+
+  // Return success response
+  return successResponse(
+    res,
+    { order: result.order, clientSecret: result.clientSecret },
+    result.message,
+    201
+  );
 });
 
 //  Get user's all orders (paginated)
@@ -468,9 +494,33 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
   if (!allowed.includes(status))
     return errorResponse(res, "Invalid status", 400);
 
+  // Prepare update object
+  const updateData = { orderStatus: status };
+
+  // Auto-update payment status when order is delivered
+  if (status === "delivered") {
+    const currentOrder = await Order.findById(req.params.id);
+    if (currentOrder) {
+      // For COD orders, always set payment status to paid when delivered
+      if (currentOrder.paymentMethod === "cod" && currentOrder.paymentStatus !== "paid") {
+        updateData.paymentStatus = "paid";
+      }
+      // For Stripe/ApplePay orders, ensure payment status is paid (should already be, but ensure it)
+      // Only update if it's not already paid and not cancelled/failed
+      if (
+        (currentOrder.paymentMethod === "stripe" || currentOrder.paymentMethod === "applepay") &&
+        currentOrder.paymentStatus !== "paid" &&
+        currentOrder.paymentStatus !== "failed" &&
+        currentOrder.paymentStatus !== "refunded"
+      ) {
+        updateData.paymentStatus = "paid";
+      }
+    }
+  }
+
   const order = await Order.findByIdAndUpdate(
     req.params.id,
-    { orderStatus: status },
+    updateData,
     { new: true }
   ).populate("user", "name email");
 
