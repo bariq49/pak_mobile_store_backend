@@ -28,6 +28,7 @@ const orderRoutes = require("./routes/order.routes");
 const couponRoutes = require("./routes/coupon.routes");
 const shippingZoneRoutes = require("./routes/shippingZone.routes");
 const siteSettingRoutes = require("./routes/siteSetting.routes");
+const contactRoutes = require("./routes/contact.routes");
 const stripeWebhook = require("./routes/stripeWebhook.route");
 
 app.use("/api/stripe", stripeWebhook);
@@ -133,6 +134,7 @@ app.use("/api/v1/orders", orderRoutes);
 app.use("/api/v1/coupon", couponRoutes);
 app.use("/api/v1/shipping-zones", shippingZoneRoutes);
 app.use("/api/v1/admin/settings", siteSettingRoutes);
+app.use("/api/v1/contact", contactRoutes);
 
 // Static files
 app.use(express.static(path.join(__dirname, "public")));

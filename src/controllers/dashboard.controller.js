@@ -15,29 +15,43 @@ exports.getDashboardStats = catchAsync(async (req, res) => {
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const startOfYear = new Date(now.getFullYear(), 0, 1);
 
-  // Total Revenue (sum of all paid orders)
+  // Total Revenue (sum of all delivered orders - if delivered, payment should be paid)
+  // Also include paid orders that might not be delivered yet (for accurate revenue tracking)
   const totalRevenue = await Order.aggregate([
-    { $match: { paymentStatus: "paid" } },
+    {
+      $match: {
+        $or: [
+          { orderStatus: "delivered" }, // Delivered orders count as revenue
+          { paymentStatus: "paid" } // Paid orders also count (might be processing/shipped)
+        ]
+      }
+    },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
   ]);
 
-  // Today's Revenue
+  // Today's Revenue (orders created today that are delivered or paid)
   const todayRevenue = await Order.aggregate([
     {
       $match: {
-        paymentStatus: "paid",
         createdAt: { $gte: startOfToday },
+        $or: [
+          { orderStatus: "delivered" },
+          { paymentStatus: "paid" }
+        ]
       },
     },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
   ]);
 
-  // Monthly Revenue
+  // Monthly Revenue (orders created this month that are delivered or paid)
   const monthlyRevenue = await Order.aggregate([
     {
       $match: {
-        paymentStatus: "paid",
         createdAt: { $gte: startOfMonth },
+        $or: [
+          { orderStatus: "delivered" },
+          { paymentStatus: "paid" }
+        ]
       },
     },
     { $group: { _id: null, total: { $sum: "$totalAmount" } } },
@@ -78,6 +92,11 @@ exports.getDashboardStats = catchAsync(async (req, res) => {
   // Paid Orders
   const paidOrders = await Order.countDocuments({ paymentStatus: "paid" });
 
+  // Completed Orders (delivered)
+  const completedOrders = await Order.countDocuments({
+    orderStatus: "delivered",
+  });
+
   const stats = {
     revenue: {
       total: totalRevenue[0]?.total || 0,
@@ -90,6 +109,7 @@ exports.getDashboardStats = catchAsync(async (req, res) => {
       monthly: monthlyOrders,
       pending: pendingOrders,
       paid: paidOrders,
+      completed: completedOrders,
     },
     customers: {
       total: totalCustomers,
@@ -132,12 +152,15 @@ exports.getRevenueChart = catchAsync(async (req, res) => {
     startDate.setDate(startDate.getDate() - 30);
   }
 
-  // Group by date
+  // Group by date (include delivered orders OR paid orders)
   const revenueData = await Order.aggregate([
     {
       $match: {
-        paymentStatus: "paid",
         createdAt: { $gte: startDate, $lte: endDate },
+        $or: [
+          { orderStatus: "delivered" }, // Delivered orders count as revenue
+          { paymentStatus: "paid" } // Paid orders also count
+        ]
       },
     },
     {
