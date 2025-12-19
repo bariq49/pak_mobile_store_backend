@@ -107,9 +107,9 @@ const createOrderFromItems = async (
     // Check variant stock if variant exists
     if (item.variantId && product.variants && Array.isArray(product.variants)) {
       const variant = findVariantById(product.variants, item.variantId);
-      if (!variant) throw new Error(`Variant not found for product ${product.name}`);
+      if (!variant) throw new Error(`Variant not found for product ${product.productName || product.name || product.translations?.en?.productName || 'Unknown Product'}`);
       if (variant.stock === undefined || variant.stock === null || variant.stock < item.quantity) {
-        throw new Error(`Insufficient variant stock for product ${product.name}`);
+        throw new Error(`Insufficient variant stock for product ${product.productName || product.name || product.translations?.en?.productName || 'Unknown Product'}`);
       }
       // Update variant stock - find the variant in the product's variants array and update it
       const variantIdStr = String(item.variantId).trim();
@@ -122,12 +122,12 @@ const createOrderFromItems = async (
         product.salesCount = (product.salesCount || 0) + item.quantity;
         await product.save({ session });
       } else {
-        throw new Error(`Variant not found in product ${product.name}`);
+        throw new Error(`Variant not found in product ${product.productName || product.name || product.translations?.en?.productName || 'Unknown Product'}`);
       }
     } else {
       // Check product stock for simple products
       if (!product.in_stock || product.quantity < item.quantity) {
-        throw new Error(`Insufficient stock for product ${product.name}`);
+        throw new Error(`Insufficient stock for product ${product.productName || product.name || product.translations?.en?.productName || 'Unknown Product'}`);
       }
       if (product.product_type === "simple") {
         product.quantity -= item.quantity;
@@ -168,7 +168,7 @@ const createOrderFromItems = async (
     
     return {
       product: item.product._id,
-      name: product.name,
+      name: product.productName || product.name || product.translations?.en?.productName || 'Product',
       price,
       originalPrice: originalPrice,
       dealPrice: dealPrice,
@@ -280,8 +280,19 @@ exports.createOrder = catchAsync(async (req, res) => {
   const userId = req.user._id;
   const { addressId, paymentMethod = "cod", metadata = {}, isBuyNow = false } = req.body;
 
+  // Validate required fields
+  if (!addressId) {
+    return errorResponse(res, 'Address ID is required', 400);
+  }
+
+  if (!['cod', 'stripe', 'applepay'].includes(paymentMethod)) {
+    return errorResponse(res, 'Invalid payment method', 400);
+  }
+
   // Wrap the entire transaction in retry logic
-  const result = await retryTransaction(async () => {
+  let result;
+  try {
+    result = await retryTransaction(async () => {
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -415,9 +426,37 @@ exports.createOrder = catchAsync(async (req, res) => {
     } catch (err) {
       await session.abortTransaction();
       session.endSession();
+      // Log error for debugging
+      console.error('❌ Order creation error:', {
+        message: err.message,
+        stack: err.stack,
+        userId,
+        addressId,
+        paymentMethod,
+        isBuyNow,
+      });
       throw err; // Re-throw to be caught by retry logic
     }
-  });
+    });
+  } catch (error) {
+    // Handle errors from retryTransaction
+    console.error('❌ Order creation failed after retries:', {
+      message: error.message,
+      stack: error.stack,
+      userId: userId.toString(),
+      addressId,
+      paymentMethod,
+      isBuyNow,
+    });
+    
+    // Return proper error response
+    return errorResponse(
+      res,
+      error.message || 'Failed to create order. Please try again.',
+      500,
+      process.env.NODE_ENV === 'development' ? { error: error.stack } : undefined
+    );
+  }
 
   // Return success response
   return successResponse(
